@@ -1,12 +1,13 @@
 import { html, render } from 'lit-html';
 import { proposal_verifier_backend } from 'declarations/proposal_verifier_backend';
-import { sha256 } from './utils.js'; // New utils file
+import { sha256 } from './utils.js';
 
 class App {
   proposalId = '';
   proposalData = null;
   commitStatus = '';
   hashMatch = false;
+  hashError = '';
   rebuildScript = '';
 
   constructor() {
@@ -36,8 +37,14 @@ class App {
   #handleVerifyHash = async () => {
     const args = document.getElementById('args').value;
     const expectedHash = document.getElementById('expectedHash').value;
-    const computedHash = sha256(args);
-    this.hashMatch = computedHash === expectedHash;
+    this.hashError = '';
+    try {
+      const computedHash = await sha256(args);
+      this.hashMatch = computedHash === expectedHash;
+    } catch (err) {
+      this.hashError = err.message || String(err);
+      this.hashMatch = false;
+    }
     this.#render();
   };
 
@@ -63,6 +70,7 @@ class App {
             <input id="expectedHash" placeholder="Expected Hash" />
             <button @click=${this.#handleVerifyHash}>Verify</button>
             <p>Match: ${this.hashMatch ? 'Yes' : 'No'}</p>
+            ${this.hashError ? html`<p class="error">${this.hashError}</p>` : ''}
           </section>
           <section>
             <h2>Rebuild Locally</h2>
