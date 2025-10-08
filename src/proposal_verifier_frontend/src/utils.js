@@ -1,8 +1,15 @@
-export function sha256(message) {
-  // Simple SHA256 placeholder; use crypto.subtle in browser for real
+export async function sha256(message) {
+  if (!message) {
+    return '';
+  }
+
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API is not available in this environment.');
+  }
+
   const encoder = new TextEncoder();
-  // Note: Browser-only; for full impl, import crypto
-  return crypto.subtle.digest('SHA-256', encoder.encode(message)).then(hash => {
-    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-  });
+  const data = encoder.encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }

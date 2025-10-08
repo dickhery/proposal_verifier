@@ -1,70 +1,194 @@
+import Array "mo:base/Array";
 import Blob "mo:base/Blob";
 import Cycles "mo:base/ExperimentalCycles";
 import Error "mo:base/Error";
+import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
 import Principal "mo:base/Principal";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
-import TrieMap "mo:base/TrieMap";
 
-import IC "mo:ic";
-// If you want them later, keep these (correct) imports.
-// import Candid "mo:candid";
-// import JSON "mo:json";
+persistent actor self {
 
-persistent actor {
+  // -----------------------------
+  // Types for HTTPS outcalls
+  // -----------------------------
+  type HttpHeader = {
+    name : Text;
+    value : Text;
+  };
 
-  let Management = actor ("aaaaa-aa") : actor {
-  http_request : (IC.HttpRequestArgs) -> async IC.HttpResponsePayload;
-};
+  type TransformContext = {
+    function : {
+      principal : Principal;
+      method_name : Text;
+    };
+    context : Blob;
+  };
 
-  transient let NNS_GOVERNANCE : Principal = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
+  type HttpRequestArgs = {
+    url : Text;
+    max_response_bytes : ?Nat64;
+    headers : [HttpHeader];
+    body : ?Blob;
+    method : {
+      #get;
+      #head;
+      #post;
+    };
+    transform : ?TransformContext;
+  };
 
-  type ProposalInfo = {
+  type HttpResponsePayload = {
+    status : Nat;
+    headers : [HttpHeader];
+    body : Blob;
+  };
+
+  type TransformArgs = {
+    response : HttpResponsePayload;
+    context : Blob;
+  };
+
+  // -----------------------------
+  // NNS governance types (subset)
+  // -----------------------------
+  module GovernanceTypes {
+    public type ProposalId = {
+      id : Nat64;
+    };
+
+    public type Proposal = {
+      url : Text;
+      summary : Text;
+      title : ?Text;
+    };
+
+    public type ProposalInfo = {
+      id : ?ProposalId;
+      proposal : ?Proposal;
+    };
+  };
+
+  type SimplifiedProposalInfo = {
     id : Nat64;
     summary : Text;
+    url : Text;
+    title : ?Text;
   };
 
-  // Placeholder for now so the canister deploys cleanly.
-  // TODO: Replace with a typed actor interface to NNS governance or a Candid-based dynamic call.
-  public query func getProposal(id : Nat64) : async Result.Result<ProposalInfo, Text> {
-    #err("getProposal not implemented yet — add NNS governance interface or Candid call.")
+  // -----------------------------
+  // External canisters
+  // -----------------------------
+  let Management = actor ("aaaaa-aa") : actor {
+    http_request : (HttpRequestArgs) -> async HttpResponsePayload;
   };
 
-  // HTTPS outcall to GitHub API to check a commit; returns raw body text for now.
-public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Text, Text> {
-  let url = "https://api.github.com/repos/" # repo # "/commits/" # commit;
+  let NNS_GOVERNANCE : Principal = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
 
-  // Build a typed request (IC.HttpRequestArgs).
-  let request : IC.HttpRequestArgs = {
-    url = url;
-    method = #get;
-    headers = [];                 // e.g., you can add a User-Agent if needed
-    body = null;
-    max_response_bytes = ?200_000;
-    transform = null;             // optional
+  let governance = actor (Principal.toText(NNS_GOVERNANCE)) : actor {
+    get_proposal_info : (Nat64) -> async ?GovernanceTypes.ProposalInfo;
   };
 
-  // Attach cycles (tune as needed).
-  Cycles.add<system>(100_000_000_000);
+  // GitHub HTTP transform – strips disallowed headers and leaves body untouched.
+  public query func githubTransform(args : TransformArgs) : async HttpResponsePayload {
+    let sanitizedHeaders = Array.filter<HttpHeader>(
+      args.response.headers,
+      func(h : HttpHeader) : Bool {
+        switch (h.name) {
+          case ("set-cookie") { false };
+          case ("Set-Cookie") { false };
+          case _ { true };
+        }
+      }
+    );
 
-  try {
-    // Call the management canister’s http_request method.
-    let response : IC.HttpResponsePayload = await Management.http_request(request);
-
-    switch (Text.decodeUtf8(response.body)) {
-      case (?t) { #ok(t) };
-      case null { #err("No body") };
+    {
+      status = args.response.status;
+      headers = sanitizedHeaders;
+      body = args.response.body;
     };
-  } catch (e) {
-    #err(Error.message(e))
   };
-}
 
+  // -----------------------------
+  // Public API
+  // -----------------------------
 
-  // Temporary args "hash" check — replace with real SHA-256 + hex later.
+  public query func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
+    if (id == 0) {
+      return #err("Proposal id must be greater than zero");
+    };
+
+    try {
+      let responseOpt = await governance.get_proposal_info(id);
+      switch (responseOpt) {
+        case (null) { #err("Proposal not found") };
+        case (?info) {
+          switch (info.id, info.proposal) {
+            case (?pid, ?proposal) {
+              #ok({
+                id = pid.id;
+                summary = proposal.summary;
+                url = proposal.url;
+                title = proposal.title;
+              });
+            };
+            case _ {
+              #err("Proposal missing summary data")
+            };
+          }
+        }
+      }
+    } catch (e) {
+      #err("Failed to query governance canister: " # Error.message(e))
+    }
+  };
+
+  public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Text, Text> {
+    if (Text.size(commit) == 0) {
+      return #err("Commit hash missing from proposal summary");
+    };
+
+    let url = "https://api.github.com/repos/" # repo # "/commits/" # commit;
+
+    let request : HttpRequestArgs = {
+      url = url;
+      method = #get;
+      headers = [
+        { name = "Accept"; value = "application/vnd.github+json" },
+        { name = "User-Agent"; value = "proposal-verifier-canister" },
+      ];
+      body = null;
+      max_response_bytes = ?200_000;
+      transform = ?{
+        function = {
+          principal = Principal.fromActor(self);
+          method_name = "githubTransform";
+        };
+        context = Blob.fromArray([]);
+      };
+    };
+
+    // 100B cycles covers most GitHub responses; adjust if responses exceed limit.
+    Cycles.add<system>(100_000_000_000);
+
+    try {
+      let response = await Management.http_request(request);
+      if (response.status == 200) {
+        switch (Text.decodeUtf8(response.body)) {
+          case (?bodyText) { #ok(bodyText) };
+          case null { #err("Unable to decode GitHub response") };
+        }
+      } else {
+        #err("GitHub returned status " # Nat.toText(response.status))
+      }
+    } catch (e) {
+      #err("HTTPS outcall failed: " # Error.message(e))
+    }
+  };
+
   public func verifyArgsHash(args : Text, expectedHash : Text) : async Bool {
-    // TODO: implement cryptographic hash check (e.g., SHA-256) and compare hex.
+    // Placeholder: front-end performs actual SHA-256 comparison.
     return args == expectedHash;
   };
 
@@ -72,9 +196,11 @@ public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Tex
     switch (proposalType) {
       case ("IC-OS") {
         "git clone https://github.com/dfinity/ic && git checkout " # commit
-        # " && ./gitlab-ci/tools/repro-check.sh -c " # commit
+        # " && ./gitlab-ci/tools/repro-check.sh -c " # commit;
       };
-      case _ { "echo 'Run local build commands here'" };
+      case _ {
+        "echo 'Run local build commands here'";
+      };
     }
   };
 };
