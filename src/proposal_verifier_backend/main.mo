@@ -114,7 +114,7 @@ persistent actor self {
   // Public API
   // -----------------------------
 
-  public query func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
+  public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) {
       return #err("Proposal id must be greater than zero");
     };
