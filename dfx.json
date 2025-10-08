@@ -1,0 +1,26 @@
+{
+  "canisters": {
+    "proposal_verifier_backend": {
+      "main": "src/proposal_verifier_backend/main.mo",
+      "type": "motoko"
+    },
+    "proposal_verifier_frontend": {
+      "dependencies": [
+        "proposal_verifier_backend"
+      ],
+      "source": [
+        "src/proposal_verifier_frontend/dist"
+      ],
+      "type": "assets",
+      "workspace": "proposal_verifier_frontend"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": "mops sources"
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

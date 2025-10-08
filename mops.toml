@@ -1,0 +1,5 @@
+[dependencies]
+base = "0.16.0"
+candid = "2.1.0"
+json = "1.4.0"
+ic = "3.2.0"
