@@ -1,0 +1,8 @@
+{
+  "proposal_verifier_backend": {
+    "ic": "g2jaq-aaaaa-aaaap-an4ra-cai"
+  },
+  "proposal_verifier_frontend": {
+    "ic": "g5ige-nyaaa-aaaap-an4rq-cai"
+  }
+}
