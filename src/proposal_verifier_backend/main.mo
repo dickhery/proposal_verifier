@@ -2,11 +2,14 @@ import Array "mo:base/Array";
 import Blob "mo:base/Blob";
 import Cycles "mo:base/ExperimentalCycles";
 import Error "mo:base/Error";
+import Iter "mo:base/Iter";
 import Nat "mo:base/Nat";
 import Nat64 "mo:base/Nat64";
+import Option "mo:base/Option";
 import Principal "mo:base/Principal";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
+import TrieMap "mo:base/TrieMap";
 
 persistent actor self {
 
@@ -50,6 +53,11 @@ persistent actor self {
     context : Blob;
   };
 
+  type FetchResult = {
+    body : Blob;
+    headers : [HttpHeader];
+  };
+
   // -----------------------------
   // NNS governance types (subset)
   // -----------------------------
@@ -75,11 +83,18 @@ persistent actor self {
     summary : Text;
     url : Text;
     title : ?Text;
+    extractedCommit : ?Text;
+    extractedHash : ?Text;
+    extractedDocUrl : ?Text;
+    extractedRepo : ?Text;
+    proposalType : Text;
   };
 
   // -----------------------------
   // External canisters
   // -----------------------------
+  // NOTE: Keep these as persistent (non-transient) to preserve the stable layout
+  // and avoid M0169 on upgrades.
   let Management = actor ("aaaaa-aa") : actor {
     http_request : (HttpRequestArgs) -> async HttpResponsePayload;
   };
@@ -90,19 +105,30 @@ persistent actor self {
     get_proposal_info : (Nat64) -> async ?GovernanceTypes.ProposalInfo;
   };
 
-  // GitHub HTTP transform – strips disallowed headers and leaves body untouched.
-  public query func githubTransform(args : TransformArgs) : async HttpResponsePayload {
+  // -----------------------------
+  // Helpers
+  // -----------------------------
+  /// Text slicing helper: returns substring [from, to) (end-exclusive).
+  /// Clamps bounds to the text length and handles from >= to → "".
+  func textSlice(t : Text, from : Nat, to : Nat) : Text {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    let start = if (from < n) from else n;
+    let finishBase = if (to < n) to else n;
+    let finish = if (finishBase > start) finishBase else start;
+    let sliced = Array.slice<Char>(chars, start, finish);
+    Text.fromIter(sliced);
+  };
+
+  // General transform – strips varying headers (e.g., dates, cookies)
+  public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
     let sanitizedHeaders = Array.filter<HttpHeader>(
       args.response.headers,
       func(h : HttpHeader) : Bool {
-        switch (h.name) {
-          case ("set-cookie") { false };
-          case ("Set-Cookie") { false };
-          case _ { true };
-        }
+        let lowerName = Text.toLowercase(h.name);
+        not (lowerName == "date" or lowerName == "set-cookie" or lowerName == "etag")
       }
     );
-
     {
       status = args.response.status;
       headers = sanitizedHeaders;
@@ -110,10 +136,20 @@ persistent actor self {
     };
   };
 
+  // Custom indexOf implementation (uses textSlice)
+  func indexOf(text : Text, pattern : Text) : ?Nat {
+    let tSize = Text.size(text);
+    let pSize = Text.size(pattern);
+    if (pSize == 0 or pSize > tSize) return null;
+    label search for (i in Iter.range(0, tSize - pSize)) {
+      if (textSlice(text, i, i + pSize) == pattern) return ?i;
+    };
+    return null;
+  };
+
   // -----------------------------
   // Public API
   // -----------------------------
-
   public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) {
       return #err("Proposal id must be greater than zero");
@@ -126,11 +162,27 @@ persistent actor self {
         case (?info) {
           switch (info.id, info.proposal) {
             case (?pid, ?proposal) {
+              // Parse summary for common patterns
+              let commitOpt = extractPattern(proposal.summary, "git commit: ", "\n");
+              let hashOpt = extractPattern(proposal.summary, "sha256 hash: ", "\n");
+              let docUrlOpt = extractPattern(proposal.summary, "document url: ", "\n");
+              let repoOpt = extractPattern(proposal.summary, "repository: ", "\n");
+
+              let proposalType =
+                if (Text.contains(proposal.summary, #text "IC OS") or Text.contains(proposal.summary, #text "replica")) "IC-OS"
+                else if (Text.contains(proposal.summary, #text "Wasm") or Text.contains(proposal.summary, #text "canister upgrade")) "WASM"
+                else "Unknown";
+
               #ok({
                 id = pid.id;
                 summary = proposal.summary;
                 url = proposal.url;
                 title = proposal.title;
+                extractedCommit = commitOpt;
+                extractedHash = hashOpt;
+                extractedDocUrl = docUrlOpt;
+                extractedRepo = repoOpt;
+                proposalType;
               });
             };
             case _ {
@@ -144,9 +196,30 @@ persistent actor self {
     }
   };
 
+  func extractPattern(text : Text, start : Text, end : Text) : ?Text {
+    let startPos = indexOf(text, start);
+    switch (startPos) {
+      case null { null };
+      case (?sp) {
+        let fromStart = textSlice(text, sp + Text.size(start), Text.size(text));
+        let endPos = indexOf(fromStart, end);
+        switch (endPos) {
+          case null { null };
+          case (?ep) {
+            let extracted = textSlice(fromStart, 0, ep);
+            ?Text.trim(extracted, #char ' ') // Trim surrounding spaces
+          };
+        }
+      }
+    }
+  };
+
   public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Text, Text> {
     if (Text.size(commit) == 0) {
-      return #err("Commit hash missing from proposal summary");
+      return #err("Commit hash missing");
+    };
+    if (Text.size(repo) == 0) {
+      return #err("Repository missing");
     };
 
     let url = "https://api.github.com/repos/" # repo # "/commits/" # commit;
@@ -163,13 +236,12 @@ persistent actor self {
       transform = ?{
         function = {
           principal = Principal.fromActor(self);
-          method_name = "githubTransform";
+          method_name = "generalTransform";
         };
         context = Blob.fromArray([]);
       };
     };
 
-    // 100B cycles covers most GitHub responses; adjust if responses exceed limit.
     Cycles.add<system>(100_000_000_000);
 
     try {
@@ -187,19 +259,51 @@ persistent actor self {
     }
   };
 
+  public func fetchDocument(url : Text) : async Result.Result<FetchResult, Text> {
+    let request : HttpRequestArgs = {
+      url = url;
+      method = #get;
+      headers = [{ name = "User-Agent"; value = "proposal-verifier-canister" }];
+      body = null;
+      max_response_bytes = ?2_000_000; // Limit to 2MB
+      transform = ?{
+        function = {
+          principal = Principal.fromActor(self);
+          method_name = "generalTransform";
+        };
+        context = Blob.fromArray([]);
+      };
+    };
+
+    Cycles.add<system>(100_000_000_000);
+
+    try {
+      let response = await Management.http_request(request);
+      if (response.status == 200) {
+        #ok({ body = response.body; headers = response.headers })
+      } else {
+        #err("Fetch failed with status " # Nat.toText(response.status))
+      }
+    } catch (e) {
+      #err("Outcall failed: " # Error.message(e))
+    }
+  };
+
   public func verifyArgsHash(args : Text, expectedHash : Text) : async Bool {
-    // Placeholder: front-end performs actual SHA-256 comparison.
-    return args == expectedHash;
+    // Placeholder; real compute in frontend
+    return Text.equal(args, expectedHash);
   };
 
   public query func getRebuildScript(proposalType : Text, commit : Text) : async Text {
     switch (proposalType) {
       case ("IC-OS") {
-        "git clone https://github.com/dfinity/ic && git checkout " # commit
-        # " && ./gitlab-ci/tools/repro-check.sh -c " # commit;
+        "sudo apt-get install -y curl && curl --proto '=https' --tlsv1.2 -sSLO https://raw.githubusercontent.com/dfinity/ic/" # commit # "/gitlab-ci/tools/repro-check.sh && chmod +x repro-check.sh && ./repro-check.sh -c " # commit;
+      };
+      case ("WASM") {
+        "git clone https://github.com/dfinity/ic && git checkout " # commit # " && cargo build --release --target wasm32-unknown-unknown && ic-wasm target/wasm32-unknown-unknown/release/<module>.wasm -o verified.wasm metadata candid:service -f <candid.did> -v public && sha256sum verified.wasm";
       };
       case _ {
-        "echo 'Run local build commands here'";
+        "echo 'Determine type and run manual build'";
       };
     }
   };
