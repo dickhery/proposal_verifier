@@ -56,6 +56,14 @@ persistent actor self {
     proposalType : Text;
   };
 
+  // New: augmented info from Dashboard scraping
+  public type AugmentedProposalInfo = {
+    base : SimplifiedProposalInfo;
+    expectedHashFromDashboard : ?Text;
+    payloadSnippetFromDashboard : ?Text;
+    dashboardUrl : Text;
+  };
+
   // -----------------------------
   // External canisters
   // -----------------------------
@@ -91,42 +99,51 @@ persistent actor self {
     return null;
   };
 
-  // ---- FIXED: early-return version avoids 'break' typing issues
   func isHex(s : Text) : Bool {
-  for (ch in s.chars()) {
-    let c = Char.toNat32(ch);
-    let isDigit = (c >= 48 and c <= 57);   // 0-9
-    let isLower = (c >= 97 and c <= 102);  // a-f
-    let isUpper = (c >= 65 and c <= 70);   // A-F
-    if (not (isDigit or isLower or isUpper)) {
-      return false;
+    for (ch in s.chars()) {
+      let c = Char.toNat32(ch);
+      let isDigit = (c >= 48 and c <= 57);   // 0-9
+      let isLower = (c >= 97 and c <= 102);  // a-f
+      let isUpper = (c >= 65 and c <= 70);   // A-F
+      if (not (isDigit or isLower or isUpper)) return false;
     };
+    true
   };
-  true
-};
 
-  // Return first 40-hex substring (likely a git commit)
+  // First 40-hex (git commit-ish)
   func findFirst40Hex(t : Text) : ?Text {
     let n = Text.size(t);
     for (i in Iter.range(0, if (n >= 40) n - 40 else 0)) {
       let candidate = textSlice(t, i, i + 40);
       if (isHex(candidate) and Text.size(candidate) == 40) return ?candidate;
     };
-    return null;
+    null
   };
 
-  // Return first 64-hex substring (likely a sha256)
+  // First 64-hex (sha256-ish)
   func findFirst64Hex(t : Text) : ?Text {
     let n = Text.size(t);
     for (i in Iter.range(0, if (n >= 64) n - 64 else 0)) {
       let candidate = textSlice(t, i, i + 64);
       if (isHex(candidate) and Text.size(candidate) == 64) return ?candidate;
     };
-    return null;
+    null
+  };
+
+  // Search for 64-hex near a marker window
+  func find64HexNearMarker(t : Text, marker : Text, window : Nat) : ?Text {
+    switch (indexOf(t, marker)) {
+      case null { null };
+      case (?p) {
+        let start = if (p < window/2) 0 else p - (window/2);
+        let end = Nat.min(Text.size(t), p + window/2);
+        let segment = textSlice(t, start, end);
+        findFirst64Hex(segment)
+      }
+    }
   };
 
   // Try to pull a GitHub repo + commit from any URL in summary.
-  // Handles both inline links and [ref]: url lines.
   func extractGithubRepoAndCommit(summary : Text) : (?Text, ?Text) {
     let marker = "https://github.com/";
     var posOpt = indexOf(summary, marker);
@@ -213,7 +230,7 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Public API
+  // Public API: EXISTING
   // -----------------------------
   public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) return #err("Proposal id must be greater than zero");
@@ -231,7 +248,7 @@ persistent actor self {
               let commit40Opt = findFirst40Hex(summary);
               let sha256Opt  = findFirst64Hex(summary);
 
-              // Grab a likely URL near "release notes" or the first https:// occurrence
+              // Grab a likely URL near "release notes" or first https:// occurrence
               let docUrlOpt =
                 switch (indexOf(summary, "release notes")) {
                   case (?p) {
@@ -372,4 +389,73 @@ persistent actor self {
       case _ { "echo 'Determine proposal type, then rebuild accordingly'"; }
     }
   };
-};
+
+  // -----------------------------
+  // NEW: Dashboard scraping & augmented getter
+  // -----------------------------
+
+  // lightweight text fetcher using fetchDocument
+  func fetchText(url : Text) : async ?Text {
+    switch (await fetchDocument(url)) {
+      case (#ok(res)) {
+        switch (Text.decodeUtf8(res.body)) { case (?t) ?t; case null null };
+      };
+      case (#err(_)) null;
+    }
+  };
+
+  // Extract expected_hash from dashboard HTML
+  func extractExpectedHashFromDashboard(html : Text) : ?Text {
+    // Prefer a 64-hex near the "expected_hash" marker, else first 64-hex in page
+    switch (find64HexNearMarker(html, "expected_hash", 600)) {
+      case (?h) ?h;
+      case null findFirst64Hex(html);
+    }
+  };
+
+  // Extract a short payload snippet block for user display (best-effort)
+  func extractPayloadSnippet(html : Text) : ?Text {
+    // Heuristic: find the word "Payload" and capture next ~1200 chars, stop at "Overview" or closing tag.
+    switch (indexOf(html, "Payload")) {
+      case null null;
+      case (?p) {
+        let tail = textSlice(html, p, Nat.min(Text.size(html), p + 2000));
+        // Try to get curly-brace block that often surrounds the JSON-ish payload
+        switch (indexOf(tail, "{")) {
+          case null ?textSlice(tail, 0, Nat.min(Text.size(tail), 600));
+          case (?o) {
+            let sub = textSlice(tail, o, Nat.min(Text.size(tail), o + 1200));
+            // Stop at first "</" as a crude HTML boundary
+            switch (indexOf(sub, "</")) {
+              case null ?sub;
+              case (?end) ?textSlice(sub, 0, end);
+            }
+          }
+        }
+      }
+    }
+  };
+
+  // Main augmented getter
+  public shared func getProposalAugmented(id : Nat64) : async Result.Result<AugmentedProposalInfo, Text> {
+    switch (await getProposal(id)) {
+      case (#err(e)) { #err(e) };
+      case (#ok(base)) {
+        let dashboardUrl = "https://dashboard.internetcomputer.org/proposal/" # Nat64.toText(id);
+        let htmlOpt = await fetchText(dashboardUrl);
+
+        let (expectedFromDash, snippetFromDash) = switch (htmlOpt) {
+          case null (null, null);
+          case (?html) (extractExpectedHashFromDashboard(html), extractPayloadSnippet(html));
+        };
+
+        #ok({
+          base;
+          expectedHashFromDashboard = expectedFromDash;
+          payloadSnippetFromDashboard = snippetFromDash;
+          dashboardUrl;
+        })
+      }
+    }
+  };
+}

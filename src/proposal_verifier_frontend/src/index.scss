@@ -13,11 +13,17 @@ form {
   display: flex;
   gap: 10px;
   margin-bottom: 20px;
+  align-items: center;
 }
 
 input, button {
   padding: 8px;
   font-size: 1rem;
+}
+
+button.loading {
+  opacity: 0.7;
+  cursor: not-allowed;
 }
 
 section {
@@ -32,10 +38,13 @@ pre {
   background: #eee;
   padding: 10px;
   overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 ul {
   list-style: none;
+  padding-left: 0;
 }
 
 .error {
