@@ -1,15 +1,21 @@
 export async function sha256(message) {
-  if (!message) {
-    return '';
+  if (message == null) return "";
+
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    throw new Error("Web Crypto API is not available in this environment.");
   }
 
-  if (typeof crypto === 'undefined' || !crypto.subtle) {
-    throw new Error('Web Crypto API is not available in this environment.');
+  let data;
+  if (message instanceof Uint8Array) {
+    data = message; // already bytes
+  } else if (typeof message === "string") {
+    data = new TextEncoder().encode(message);
+  } else {
+    // Try to stringify objects as a convenience
+    data = new TextEncoder().encode(String(message));
   }
 
-  const encoder = new TextEncoder();
-  const data = encoder.encode(message);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
