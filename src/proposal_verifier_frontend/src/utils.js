@@ -6,8 +6,8 @@ export async function sha256(message) {
   }
 
   let data;
-  if (message instanceof Uint8Array) {
-    data = message; // already bytes
+  if (message instanceof ArrayBuffer || message instanceof Uint8Array) {
+    data = message; // bytes or file
   } else if (typeof message === "string") {
     data = new TextEncoder().encode(message);
   } else {

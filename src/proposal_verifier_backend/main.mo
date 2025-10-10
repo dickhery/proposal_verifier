@@ -75,7 +75,7 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Text helpers
+  // Text helpers (enhanced with more markers)
   // -----------------------------
   func textSlice(t : Text, from : Nat, to : Nat) : Text {
     let chars = Text.toArray(t);
@@ -211,11 +211,6 @@ persistent actor self {
     }
   };
 
-  // Transform: strip ALL headers to avoid consensus diffs
-  public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
-    { status = args.response.status; headers = []; body = args.response.body };
-  };
-
   // Only call deterministic/text/json providers here
   func isStableDomain(url : Text) : Bool {
     Text.contains(url, #text "https://ic-api.internetcomputer.org/")
@@ -224,7 +219,7 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Core getters
+  // Core getters (enhanced)
   // -----------------------------
   public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) return #err("Proposal id must be greater than zero");
@@ -264,6 +259,8 @@ persistent actor self {
                     or Text.contains(Text.toLowercase(summary), #text "guestos")) "IC-OS"
                 else if (Text.contains(Text.toLowercase(summary), #text "wasm")
                     or Text.contains(Text.toLowercase(summary), #text "canister")) "WASM"
+                else if (Text.contains(Text.toLowercase(summary), #text "motion")) "Motion"
+                else if (Text.contains(Text.toLowercase(summary), #text "node provider")) "NodeProvider"
                 else "Unknown";
 
               #ok({
@@ -354,7 +351,7 @@ persistent actor self {
   public query func getRebuildScript(proposalType : Text, commit : Text) : async Text {
     switch (proposalType) {
       case ("IC-OS") {
-        "sudo apt-get update && sudo apt-get install -y curl\n" #
+        "sudo apt-get update && sudo apt-get install -y curl git docker.io\n" #
         "curl --proto '=https' --tlsv1.2 -sSLO https://raw.githubusercontent.com/dfinity/ic/" # commit # "/gitlab-ci/tools/repro-check.sh\n" #
         "chmod +x repro-check.sh\n" #
         "./repro-check.sh -c " # commit # "\n";
@@ -370,12 +367,14 @@ persistent actor self {
         "sha256sum ./artifacts/canisters/*.wasm{,.gz}\n" #
         "# " # hint # "\n";
       };
-      case _ { "echo 'Determine proposal type, then rebuild accordingly'"; }
+      case ("Motion") { "echo 'Motion proposals do not require rebuild; verify summary manually.'"; };
+      case ("NodeProvider") { "echo 'NodeProvider: Download self-declaration PDF, compute SHA-256, compare to proposal hash.'\nsha256sum yourfile.pdf"; };
+      case _ { "echo 'Determine proposal type, then rebuild/verify accordingly'"; }
     }
   };
 
   // -----------------------------
-  // Dashboard API (ic-api) helpers
+  // Dashboard API (ic-api) helpers (enhanced markers)
   // -----------------------------
   func fetchIcApiProposalJsonText(id : Nat64) : async ?Text {
     let url = "https://ic-api.internetcomputer.org/api/v3/proposals/" # Nat64.toText(id);
@@ -406,7 +405,12 @@ persistent actor self {
       case null {
         switch (find64HexNearMarker(jsonText, "\"wasm_module_hash\"", 1200)) {
           case (?h2) ?h2;
-          case null find64HexNearMarker(jsonText, "sha256", 1200);
+          case null {
+            switch (find64HexNearMarker(jsonText, "\"sha256\"", 1200)) {
+              case (?h3) ?h3;
+              case null find64HexNearMarker(jsonText, "\"hash\"", 1200);
+            }
+          }
         }
       }
     }
@@ -452,5 +456,10 @@ persistent actor self {
         })
       }
     }
+  };
+
+  // Transform: strip ALL headers to avoid consensus diffs
+  public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
+    { status = args.response.status; headers = []; body = args.response.body };
   };
 }

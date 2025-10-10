@@ -10,7 +10,7 @@ const CORS_ALLOWED_HOSTS = new Set([
 ]);
 
 // find any 64-hex near likely markers
-function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash']) {
+function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash', 'sha-256']) {
   const HEX64 = /[A-Fa-f0-9]{64}/g;
   for (const m of markers) {
     const idx = text.toLowerCase().indexOf(m.toLowerCase());
@@ -48,10 +48,28 @@ class App {
   payloadSnippetFromDashboard = null;
   dashboardUrl = '';
 
+  checklist = {
+    fetch: false,
+    commit: false,
+    hash: false,
+    expected: false,
+    rebuild: false, // manual
+  };
+
   constructor() { this.#render(); }
 
   #setFetching(on) { this.isFetching = on; this.#render(); }
   #normalizeHex(s) { return (s || '').trim().toLowerCase(); }
+
+  #updateChecklist() {
+    this.checklist = {
+      fetch: !!this.proposalData,
+      commit: this.commitStatus.startsWith('✅'),
+      hash: this.hashMatch || this.docHashMatch,
+      expected: !!this.expectedHash,
+      rebuild: false, // user self-reports
+    };
+  }
 
   async #handleFetchProposal(e) {
     e.preventDefault();
@@ -123,6 +141,8 @@ class App {
           if (found) break;
         }
       }
+
+      this.#updateChecklist();
     } catch (err) {
       alert(err?.message || String(err));
     }
@@ -181,6 +201,7 @@ class App {
       this.hashError = err.message || String(err);
       this.hashMatch = false;
     }
+    this.#updateChecklist();
     this.#render();
   }
 
@@ -224,7 +245,36 @@ class App {
       this.docHashError = err.message || String(err);
       this.docHashMatch = false;
     }
+    this.#updateChecklist();
     this.#render();
+  }
+
+  async #handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    this.docHashError = '';
+    this.docPreview = '';
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const computedHash = await sha256(bytes);
+      const expected = document.getElementById('expectedDocHash').value || this.expectedHash || '';
+      this.docHashMatch = !!expected && (this.#normalizeHex(computedHash) === this.#normalizeHex(expected));
+      const ct = file.type || 'binary';
+      if (ct.startsWith('text/')) {
+        this.docPreview = new TextDecoder().decode(bytes).substring(0, 200) + '…';
+      } else {
+        this.docPreview = `${ct} (${bytes.length} bytes) - Local file: ${file.name}`;
+      }
+    } catch (err) {
+      this.docHashError = err.message || String(err);
+      this.docHashMatch = false;
+    }
+    this.#updateChecklist();
+    this.#render();
+  }
+
+  #copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => alert('Copied!'));
   }
 
   #render() {
@@ -250,6 +300,7 @@ class App {
             <p><b>Title:</b> ${p.title || '(none)'} </p>
             <p><b>Summary (raw):</b></p>
             <pre>${p.summary}</pre>
+            <button @click=${() => this.#copyToClipboard(p.summary)}>Copy Summary</button>
 
             <p><b>Extracted Repo:</b> ${p.extractedRepo ?? 'None'}</p>
             <p><b>Extracted Commit:</b> ${p.extractedCommit ?? 'None'}</p>
@@ -268,7 +319,7 @@ class App {
 
           <section>
             <h2>Verify Args Hash</h2>
-            <input id="args" placeholder="Paste proposal args (or doc text) to hash" />
+            <textarea id="args" placeholder="Paste proposal args (or doc text) to hash"></textarea>
             <input id="expectedHash" placeholder="Expected SHA-256 (hex, 64 chars)" value=${this.expectedHash || ''} />
             <button @click=${() => this.#handleVerifyHash()}>Verify</button>
             <p><b>Match:</b> ${this.hashMatch ? '✅ Yes' : '❌ No'}</p>
@@ -276,10 +327,11 @@ class App {
           </section>
 
           <section>
-            <h2>Verify Linked Document</h2>
+            <h2>Verify Linked Document / Local File</h2>
             <input id="docUrl" placeholder="Document URL" value=${p.extractedDocUrl ?? ''} />
             <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
-            <button @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify</button>
+            <button @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL</button>
+            <input type="file" @change=${(e) => this.#handleFileUpload(e)} />
             <p><b>Match:</b> ${this.docHashMatch ? '✅ Yes' : '❌ No'}</p>
             ${this.docHashError ? html`<p class="error">${this.docHashError}</p>` : ''}
             <p><b>Preview:</b> ${this.docPreview}</p>
@@ -288,23 +340,25 @@ class App {
           <section>
             <h2>Payload (from Dashboard/API)</h2>
             <pre>${this.payloadSnippetFromDashboard ?? '(no payload snippet found from ic-api)'}</pre>
+            <button @click=${() => this.#copyToClipboard(this.payloadSnippetFromDashboard || '')}>Copy Payload</button>
           </section>
 
           <section>
             <h2>Rebuild Locally</h2>
             ${p.extractedArtifact ? html`<p><b>Artifact (expected):</b> ${p.extractedArtifact}</p>` : ''}
             <pre>${this.rebuildScript}</pre>
+            <button @click=${() => this.#copyToClipboard(this.rebuildScript)}>Copy Script</button>
             <p>Compare your local <code>sha256sum</code> with the on-chain / dashboard hash.</p>
           </section>
 
           <section>
             <h2>Checklist</h2>
             <ul>
-              <li>Fetch: ✅</li>
-              <li>Commit Check: ${this.commitStatus.startsWith('✅') ? '✅' : '❌'}</li>
-              <li>Args / Doc Hash: ${(this.hashMatch || this.docHashMatch) ? '✅' : '❌'}</li>
-              <li>Expected Hash from Sources: ${this.expectedHash ? '✅' : '❌'}</li>
-              <li>Rebuild & Compare: (Manual)</li>
+              <li>Fetch: ${this.checklist.fetch ? '✅' : '❌'}</li>
+              <li>Commit Check: ${this.checklist.commit ? '✅' : '❌'}</li>
+              <li>Args / Doc Hash: ${this.checklist.hash ? '✅' : '❌'}</li>
+              <li>Expected Hash from Sources: ${this.checklist.expected ? '✅' : '❌'}</li>
+              <li>Rebuild & Compare: (Manual) ${this.checklist.rebuild ? '✅' : '❌'} <button @click=${() => { this.checklist.rebuild = true; this.#render(); }}>Mark Done</button></li>
             </ul>
           </section>
         ` : ''}
