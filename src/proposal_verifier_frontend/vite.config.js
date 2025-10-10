@@ -5,37 +5,46 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' });
 
+const DEV_CSP =
+  "default-src 'self'; " +
+  "connect-src 'self' http://localhost:* http://127.0.0.1:* " +
+  "https://icp0.io https://*.icp0.io " +
+  "https://ic0.app https://*.ic0.app " +
+  "https://icp-api.io https://ic-api.internetcomputer.org " +
+  "https://api.github.com https://raw.githubusercontent.com " +
+  "https://forum.dfinity.org https://dashboard.internetcomputer.org " +
+  "data: blob:; " +
+  "img-src 'self' data: https:; " +
+  "style-src 'self' 'unsafe-inline'; " +
+  "script-src 'self'; " +
+  "object-src 'none'; " +
+  "frame-ancestors 'none'; " +
+  "base-uri 'self';";
+
 export default defineConfig({
-  build: {
-    emptyOutDir: true,
-  },
+  build: { emptyOutDir: true },
   optimizeDeps: {
-    esbuildOptions: {
-      define: {
-        global: "globalThis",
-      },
-    },
+    esbuildOptions: { define: { global: 'globalThis' } },
   },
   server: {
+    headers: { 'Content-Security-Policy': DEV_CSP },
     proxy: {
-      "/api": {
-        target: "http://127.0.0.1:4943",
+      '/api': {
+        target: 'http://127.0.0.1:4943',
         changeOrigin: true,
       },
     },
   },
-  publicDir: "assets",
+  publicDir: 'assets',
   plugins: [
-    environment("all", { prefix: "CANISTER_" }),
-    environment("all", { prefix: "DFX_" }),
+    environment('all', { prefix: 'CANISTER_' }),
+    environment('all', { prefix: 'DFX_' }),
   ],
   resolve: {
     alias: [
       {
-        find: "declarations",
-        replacement: fileURLToPath(
-          new URL("../declarations", import.meta.url)
-        ),
+        find: 'declarations',
+        replacement: fileURLToPath(new URL('../declarations', import.meta.url)),
       },
     ],
     dedupe: ['@dfinity/agent'],

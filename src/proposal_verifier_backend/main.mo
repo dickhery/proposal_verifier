@@ -4,16 +4,14 @@ import Cycles "mo:base/ExperimentalCycles";
 import Error "mo:base/Error";
 import Iter "mo:base/Iter";
 import Nat "mo:base/Nat";
+import Nat32 "mo:base/Nat32";
 import Nat64 "mo:base/Nat64";
-import Option "mo:base/Option";
 import Principal "mo:base/Principal";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
-import Nat32 "mo:base/Nat32";
 import Char "mo:base/Char";
 
 persistent actor self {
-
   // -----------------------------
   // Types for HTTPS outcalls
   // -----------------------------
@@ -56,29 +54,28 @@ persistent actor self {
     proposalType : Text;
   };
 
-  // New: augmented info from Dashboard scraping
   public type AugmentedProposalInfo = {
     base : SimplifiedProposalInfo;
-    expectedHashFromDashboard : ?Text;
-    payloadSnippetFromDashboard : ?Text;
+    expectedHashFromDashboard : ?Text;     // from ic-api JSON
+    payloadSnippetFromDashboard : ?Text;   // short JSON snippet for UI
+    expectedHashSource : ?Text;            // e.g. "ic-api"
     dashboardUrl : Text;
   };
 
   // -----------------------------
   // External canisters
   // -----------------------------
-  let Management = actor ("aaaaa-aa") : actor {
+  let Management = actor("aaaaa-aa") : actor {
     http_request : (HttpRequestArgs) -> async HttpResponsePayload;
   };
 
   let NNS_GOVERNANCE : Principal = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
-
   let governance = actor (Principal.toText(NNS_GOVERNANCE)) : actor {
     get_proposal_info : (Nat64) -> async ?GovernanceTypes.ProposalInfo;
   };
 
   // -----------------------------
-  // Helpers (Text)
+  // Text helpers
   // -----------------------------
   func textSlice(t : Text, from : Nat, to : Nat) : Text {
     let chars = Text.toArray(t);
@@ -102,15 +99,14 @@ persistent actor self {
   func isHex(s : Text) : Bool {
     for (ch in s.chars()) {
       let c = Char.toNat32(ch);
-      let isDigit = (c >= 48 and c <= 57);   // 0-9
-      let isLower = (c >= 97 and c <= 102);  // a-f
-      let isUpper = (c >= 65 and c <= 70);   // A-F
+      let isDigit = (c >= 48 and c <= 57);
+      let isLower = (c >= 97 and c <= 102);
+      let isUpper = (c >= 65 and c <= 70);
       if (not (isDigit or isLower or isUpper)) return false;
     };
     true
   };
 
-  // First 40-hex (git commit-ish)
   func findFirst40Hex(t : Text) : ?Text {
     let n = Text.size(t);
     for (i in Iter.range(0, if (n >= 40) n - 40 else 0)) {
@@ -120,7 +116,6 @@ persistent actor self {
     null
   };
 
-  // First 64-hex (sha256-ish)
   func findFirst64Hex(t : Text) : ?Text {
     let n = Text.size(t);
     for (i in Iter.range(0, if (n >= 64) n - 64 else 0)) {
@@ -130,7 +125,6 @@ persistent actor self {
     null
   };
 
-  // Search for 64-hex near a marker window
   func find64HexNearMarker(t : Text, marker : Text, window : Nat) : ?Text {
     switch (indexOf(t, marker)) {
       case null { null };
@@ -143,7 +137,7 @@ persistent actor self {
     }
   };
 
-  // Try to pull a GitHub repo + commit from any URL in summary.
+  // Extract GitHub repo+commit if it appears in the summary
   func extractGithubRepoAndCommit(summary : Text) : (?Text, ?Text) {
     let marker = "https://github.com/";
     var posOpt = indexOf(summary, marker);
@@ -159,7 +153,7 @@ persistent actor self {
           switch (idxSlash2) {
             case (?s2) {
               let repo = textSlice(rest, 0, s2);
-              let afterRepo = textSlice(rest, s2 + 1, Text.size(rest)); // expect tree|commit/...
+              let afterRepo = textSlice(rest, s2 + 1, Text.size(rest)); // tree|commit/...
               let treeIdx = indexOf(afterRepo, "tree/");
               let commitIdx = indexOf(afterRepo, "commit/");
               let picked = switch (treeIdx, commitIdx) {
@@ -181,7 +175,7 @@ persistent actor self {
                 };
                 let sha = textSlice(afterKind, 0, j);
                 if (Text.size(sha) >= 7 and Text.size(sha) <= 40) {
-                  return (? (owner # "/" # repo), ?sha);
+                  return (?(owner # "/" # repo), ?sha);
                 };
               };
             };
@@ -198,7 +192,7 @@ persistent actor self {
     (null, null)
   };
 
-  // Attempt to find "sha256sum ./artifacts/canisters/<path>.wasm(.gz)" hint in fenced code
+  // Artifact hint in summaries produced by CI
   func extractArtifactPath(summary : Text) : ?Text {
     let needle = "sha256sum ./artifacts/canisters/";
     switch (indexOf(summary, needle)) {
@@ -217,20 +211,20 @@ persistent actor self {
     }
   };
 
-  // Transform that removes variable headers (consensus-safe)
+  // Transform: strip ALL headers to avoid consensus diffs
   public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
-    let sanitizedHeaders = Array.filter<HttpHeader>(
-      args.response.headers,
-      func(h : HttpHeader) : Bool {
-        let lowerName = Text.toLowercase(h.name);
-        not (lowerName == "date" or lowerName == "set-cookie" or lowerName == "etag" or lowerName == "server")
-      }
-    );
-    { status = args.response.status; headers = sanitizedHeaders; body = args.response.body };
+    { status = args.response.status; headers = []; body = args.response.body };
+  };
+
+  // Only call deterministic/text/json providers here
+  func isStableDomain(url : Text) : Bool {
+    Text.contains(url, #text "https://ic-api.internetcomputer.org/")
+    or Text.contains(url, #text "https://api.github.com/")
+    or Text.contains(url, #text "https://raw.githubusercontent.com/");
   };
 
   // -----------------------------
-  // Public API: EXISTING
+  // Core getters
   // -----------------------------
   public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) return #err("Proposal id must be greater than zero");
@@ -246,27 +240,16 @@ persistent actor self {
 
               let (repoFromUrlOpt, commitFromUrlOpt) = extractGithubRepoAndCommit(summary);
               let commit40Opt = findFirst40Hex(summary);
-              let sha256Opt  = findFirst64Hex(summary);
+              let sha256Opt = findFirst64Hex(summary);
 
-              // Grab a likely URL near "release notes" or first https:// occurrence
+              // crude “first URL” extraction for docs link
               let docUrlOpt =
-                switch (indexOf(summary, "release notes")) {
-                  case (?p) {
-                    switch (indexOf(textSlice(summary, p, Text.size(summary)), "https://")) {
-                      case (?off) ?textSlice(summary, p + off, Nat.min(Text.size(summary), p + off + 200));
-                      case null null;
-                    }
-                  };
-                  case null {
-                    switch (indexOf(summary, "https://")) {
-                      case (?p2) ?textSlice(summary, p2, Nat.min(Text.size(summary), p2 + 200));
-                      case null null;
-                    }
-                  };
+                switch (indexOf(summary, "https://")) {
+                  case (?p2) ?textSlice(summary, p2, Nat.min(Text.size(summary), p2 + 200));
+                  case null null;
                 };
 
               let artifactOpt = extractArtifactPath(summary);
-
               let repoFinal = switch (repoFromUrlOpt) { case (?r) ?r; case null null };
               let commitFinal =
                 switch (commitFromUrlOpt, commit40Opt) {
@@ -276,8 +259,11 @@ persistent actor self {
                 };
 
               let proposalType =
-                if (Text.contains(Text.toLowercase(summary), #text "ic os") or Text.contains(Text.toLowercase(summary), #text "replica")) "IC-OS"
-                else if (Text.contains(Text.toLowercase(summary), #text "wasm") or Text.contains(Text.toLowercase(summary), #text "canister")) "WASM"
+                if (Text.contains(Text.toLowercase(summary), #text "ic os")
+                    or Text.contains(Text.toLowercase(summary), #text "replica")
+                    or Text.contains(Text.toLowercase(summary), #text "guestos")) "IC-OS"
+                else if (Text.contains(Text.toLowercase(summary), #text "wasm")
+                    or Text.contains(Text.toLowercase(summary), #text "canister")) "WASM"
                 else "Unknown";
 
               #ok({
@@ -302,29 +288,28 @@ persistent actor self {
     }
   };
 
+  // Commit existence check (GitHub) — force identity encoding and strip headers
   public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Text, Text> {
     if (Text.size(commit) == 0) return #err("Commit hash missing");
     if (Text.size(repo) == 0) return #err("Repository missing");
 
     let url = "https://api.github.com/repos/" # repo # "/commits/" # commit;
-
     let request : HttpRequestArgs = {
       url = url;
       method = #get;
       headers = [
-        { name = "Accept"; value = "application/vnd.github+json" },
+        { name = "Accept"; value = "application/vnd.github.v3+json" },
         { name = "User-Agent"; value = "proposal-verifier-canister" },
+        { name = "X-GitHub-Api-Version"; value = "2022-11-28" },
+        { name = "Accept-Encoding"; value = "identity" },
+        { name = "Cache-Control"; value = "no-cache" },
+        { name = "Pragma"; value = "no-cache" },
       ];
       body = null;
-      max_response_bytes = ?200_000;
-      transform = ?{
-        function = { principal = Principal.fromActor(self); method_name = "generalTransform" };
-        context = Blob.fromArray([]);
-      };
+      max_response_bytes = ?1_000_000;
+      transform = ?{ function = { principal = Principal.fromActor(self); method_name = "generalTransform" }; context = Blob.fromArray([]) };
     };
-
     Cycles.add<system>(100_000_000_000);
-
     try {
       let response = await Management.http_request(request);
       if (response.status == 200) {
@@ -332,29 +317,28 @@ persistent actor self {
           case (?bodyText) { #ok(bodyText) };
           case null { #err("Unable to decode GitHub response") };
         }
-      } else {
-        #err("GitHub returned status " # Nat.toText(response.status))
-      }
+      } else { #err("GitHub returned status " # Nat.toText(response.status)) }
     } catch (e) { #err("HTTPS outcall failed: " # Error.message(e)) }
   };
 
+  // Deterministic fetcher (blocked for dynamic domains)
   public func fetchDocument(url : Text) : async Result.Result<FetchResult, Text> {
     if (Text.size(url) == 0) return #err("URL missing");
-
+    if (not isStableDomain(url)) {
+      return #err("Domain likely dynamic / non-deterministic for canister outcalls; fetch in browser instead.");
+    };
     let request : HttpRequestArgs = {
       url = url;
       method = #get;
-      headers = [{ name = "User-Agent"; value = "proposal-verifier-canister" }];
+      headers = [
+        { name = "User-Agent"; value = "proposal-verifier-canister" },
+        { name = "Accept-Encoding"; value = "identity" },
+      ];
       body = null;
       max_response_bytes = ?2_000_000;
-      transform = ?{
-        function = { principal = Principal.fromActor(self); method_name = "generalTransform" };
-        context = Blob.fromArray([]);
-      };
+      transform = ?{ function = { principal = Principal.fromActor(self); method_name = "generalTransform" }; context = Blob.fromArray([]) };
     };
-
     Cycles.add<system>(100_000_000_000);
-
     try {
       let response = await Management.http_request(request);
       if (response.status == 200) { #ok({ body = response.body; headers = response.headers }) }
@@ -362,7 +346,7 @@ persistent actor self {
     } catch (e) { #err("Outcall failed: " # Error.message(e)) }
   };
 
-  // Placeholder – keep API stable (hashing done client-side)
+  // Placeholder – client computes SHA-256; this keeps the candid stable
   public func verifyArgsHash(args : Text, expectedHash : Text) : async Bool {
     return Text.equal(args, expectedHash);
   };
@@ -391,68 +375,79 @@ persistent actor self {
   };
 
   // -----------------------------
-  // NEW: Dashboard scraping & augmented getter
+  // Dashboard API (ic-api) helpers
   // -----------------------------
-
-  // lightweight text fetcher using fetchDocument
-  func fetchText(url : Text) : async ?Text {
-    switch (await fetchDocument(url)) {
-      case (#ok(res)) {
-        switch (Text.decodeUtf8(res.body)) { case (?t) ?t; case null null };
-      };
-      case (#err(_)) null;
-    }
+  func fetchIcApiProposalJsonText(id : Nat64) : async ?Text {
+    let url = "https://ic-api.internetcomputer.org/api/v3/proposals/" # Nat64.toText(id);
+    let req : HttpRequestArgs = {
+      url = url;
+      method = #get;
+      headers = [
+        { name = "Accept"; value = "application/json" },
+        { name = "User-Agent"; value = "proposal-verifier-canister" },
+        { name = "Accept-Encoding"; value = "identity" },
+      ];
+      body = null;
+      max_response_bytes = ?2_000_000;
+      transform = ?{ function = { principal = Principal.fromActor(self); method_name = "generalTransform" }; context = Blob.fromArray([]) };
+    };
+    Cycles.add<system>(100_000_000_000);
+    try {
+      let resp = await Management.http_request(req);
+      if (resp.status == 200) {
+        switch (Text.decodeUtf8(resp.body)) { case (?t) ?t; case null null };
+      } else { null };
+    } catch (e) { null };
   };
 
-  // Extract expected_hash from dashboard HTML
-  func extractExpectedHashFromDashboard(html : Text) : ?Text {
-    // Prefer a 64-hex near the "expected_hash" marker, else first 64-hex in page
-    switch (find64HexNearMarker(html, "expected_hash", 600)) {
+  func extractExpectedHashFromJsonText(jsonText : Text) : ?Text {
+    switch (find64HexNearMarker(jsonText, "\"expected_hash\"", 1200)) {
       case (?h) ?h;
-      case null findFirst64Hex(html);
-    }
-  };
-
-  // Extract a short payload snippet block for user display (best-effort)
-  func extractPayloadSnippet(html : Text) : ?Text {
-    // Heuristic: find the word "Payload" and capture next ~1200 chars, stop at "Overview" or closing tag.
-    switch (indexOf(html, "Payload")) {
-      case null null;
-      case (?p) {
-        let tail = textSlice(html, p, Nat.min(Text.size(html), p + 2000));
-        // Try to get curly-brace block that often surrounds the JSON-ish payload
-        switch (indexOf(tail, "{")) {
-          case null ?textSlice(tail, 0, Nat.min(Text.size(tail), 600));
-          case (?o) {
-            let sub = textSlice(tail, o, Nat.min(Text.size(tail), o + 1200));
-            // Stop at first "</" as a crude HTML boundary
-            switch (indexOf(sub, "</")) {
-              case null ?sub;
-              case (?end) ?textSlice(sub, 0, end);
-            }
-          }
+      case null {
+        switch (find64HexNearMarker(jsonText, "\"wasm_module_hash\"", 1200)) {
+          case (?h2) ?h2;
+          case null find64HexNearMarker(jsonText, "sha256", 1200);
         }
       }
     }
   };
 
-  // Main augmented getter
+  func extractPayloadSnippetFromJson(jsonText : Text) : ?Text {
+    switch (indexOf(jsonText, "\"payload\"")) {
+      case null null;
+      case (?p) {
+        let end = Nat.min(Text.size(jsonText), p + 1500);
+        ?textSlice(jsonText, p, end)
+      }
+    }
+  };
+
+  // Augmented getter that merges base summary info with ic-api JSON
   public shared func getProposalAugmented(id : Nat64) : async Result.Result<AugmentedProposalInfo, Text> {
     switch (await getProposal(id)) {
       case (#err(e)) { #err(e) };
       case (#ok(base)) {
         let dashboardUrl = "https://dashboard.internetcomputer.org/proposal/" # Nat64.toText(id);
-        let htmlOpt = await fetchText(dashboardUrl);
 
-        let (expectedFromDash, snippetFromDash) = switch (htmlOpt) {
-          case null (null, null);
-          case (?html) (extractExpectedHashFromDashboard(html), extractPayloadSnippet(html));
+        var expected : ?Text = null;
+        var snippet  : ?Text = null;
+        var source   : ?Text = null;
+
+        let jsonOpt = await fetchIcApiProposalJsonText(id);
+        switch (jsonOpt) {
+          case (?json) {
+            expected := extractExpectedHashFromJsonText(json);
+            snippet  := extractPayloadSnippetFromJson(json);
+            if (expected != null) { source := ?"ic-api" };
+          };
+          case null {};
         };
 
         #ok({
           base;
-          expectedHashFromDashboard = expectedFromDash;
-          payloadSnippetFromDashboard = snippetFromDash;
+          expectedHashFromDashboard = expected;
+          payloadSnippetFromDashboard = snippet;
+          expectedHashSource = source;
           dashboardUrl;
         })
       }
