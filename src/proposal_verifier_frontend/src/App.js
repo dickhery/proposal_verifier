@@ -234,7 +234,6 @@ class App {
     const body = html`
       <main>
         <h1>IC Proposal Verifier</h1>
-
         <form @submit=${(e) => this.#handleFetchProposal(e)}>
           <label>Proposal ID:</label>
           <input id="proposalId" type="number" placeholder="e.g. 138887" ?disabled=${loading} />
