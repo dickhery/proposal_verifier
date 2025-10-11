@@ -9,8 +9,8 @@ const CORS_ALLOWED_HOSTS = new Set([
   'raw.githubusercontent.com',
 ]);
 
-// find any 64-hex near likely markers
-function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash', 'sha-256']) {
+// find any 64-hex near likely markers (enhanced with more from Verify-Proposals.txt)
+function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash', 'sha-256', 'sha256sum', 'wasm hash', 'module hash']) {
   const HEX64 = /[A-Fa-f0-9]{64}/g;
   for (const m of markers) {
     const idx = text.toLowerCase().indexOf(m.toLowerCase());
@@ -41,6 +41,7 @@ class App {
   docPreview = '';
   rebuildScript = '';
   isFetching = false;
+  cycleBalance = null; // NEW: For debugging cycles
 
   expectedHash = null;
   expectedHashSource = null;
@@ -71,6 +72,29 @@ class App {
     };
   }
 
+  // Fallback copy function (fixes Clipboard API error on HTTP/local)
+  #copyToClipboard(text) {
+    try {
+      navigator.clipboard.writeText(text).then(() => alert('Copied!'));
+    } catch {
+      // Fallback for HTTP or blocked contexts
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = 0;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        alert('Copied (fallback method)!');
+      } catch (err) {
+        alert('Copy failed: ' + err.message);
+      } finally {
+        document.body.removeChild(ta);
+      }
+    }
+  }
+
   async #handleFetchProposal(e) {
     e.preventDefault();
     if (this.isFetching) return;
@@ -81,7 +105,7 @@ class App {
       const id = parseInt(idEl.value);
 
       const aug = await proposal_verifier_backend.getProposalAugmented(BigInt(id));
-      if (aug.err) throw new Error(aug.err);
+      if (aug.err) throw new Error(aug.err || 'Unknown error from backend'); // Enhanced error
 
       const unwrap = (opt) => opt?.[0] ?? null;
       const data = aug.ok;
@@ -273,8 +297,14 @@ class App {
     this.#render();
   }
 
-  #copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => alert('Copied!'));
+  // NEW: Fetch cycle balance from backend
+  async #handleCheckCycles() {
+    try {
+      this.cycleBalance = await proposal_verifier_backend.getCycleBalance();
+    } catch (err) {
+      this.cycleBalance = 'Error: ' + (err.message || String(err));
+    }
+    this.#render();
   }
 
   #render() {
@@ -291,6 +321,9 @@ class App {
             ${loading ? 'Fetching…' : 'Fetch Proposal'}
           </button>
         </form>
+
+        <!-- <button @click=${() => this.#handleCheckCycles()}>Check Backend Cycles</button> -->
+        <!-- <p><b>Cycles:</b> ${this.cycleBalance ?? '(Click to check)'}</p> --> <!-- NEW -->
 
         ${p ? html`
           <section>

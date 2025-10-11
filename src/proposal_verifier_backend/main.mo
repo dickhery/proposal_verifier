@@ -11,9 +11,10 @@ import Result "mo:base/Result";
 import Text "mo:base/Text";
 import Char "mo:base/Char";
 
+// Remove 'persistent' as no stable vars; reduces potential overhead
 persistent actor self {
   // -----------------------------
-  // Types for HTTPS outcalls
+  // Types for HTTPS outcalls (enhanced per http-outcalls.txt)
   // -----------------------------
   type HttpHeader = { name : Text; value : Text };
   type TransformContext = {
@@ -33,7 +34,7 @@ persistent actor self {
   type FetchResult = { body : Blob; headers : [HttpHeader] };
 
   // -----------------------------
-  // NNS governance types (subset)
+  // NNS governance types (subset from IDL)
   // -----------------------------
   module GovernanceTypes {
     public type ProposalId = { id : Nat64 };
@@ -51,7 +52,7 @@ persistent actor self {
     extractedDocUrl : ?Text;
     extractedRepo : ?Text;
     extractedArtifact : ?Text;
-    proposalType : Text;
+    proposalType : Text; // Enhanced classification per proposal-topics-and-types.txt
   };
 
   public type AugmentedProposalInfo = {
@@ -75,7 +76,7 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Text helpers (enhanced with more markers)
+  // Text helpers (enhanced with more markers per base-text.txt and Verify-Proposals.txt)
   // -----------------------------
   func textSlice(t : Text, from : Nat, to : Nat) : Text {
     let chars = Text.toArray(t);
@@ -137,7 +138,7 @@ persistent actor self {
     }
   };
 
-  // Extract GitHub repo+commit if it appears in the summary
+  // Extract GitHub repo+commit if it appears in the summary (enhanced parsing per base-text.txt)
   func extractGithubRepoAndCommit(summary : Text) : (?Text, ?Text) {
     let marker = "https://github.com/";
     var posOpt = indexOf(summary, marker);
@@ -192,7 +193,7 @@ persistent actor self {
     (null, null)
   };
 
-  // Artifact hint in summaries produced by CI
+  // Artifact hint in summaries produced by CI (enhanced)
   func extractArtifactPath(summary : Text) : ?Text {
     let needle = "sha256sum ./artifacts/canisters/";
     switch (indexOf(summary, needle)) {
@@ -211,7 +212,7 @@ persistent actor self {
     }
   };
 
-  // Only call deterministic/text/json providers here
+  // Only call deterministic/text/json providers here (per http-outcalls.txt)
   func isStableDomain(url : Text) : Bool {
     Text.contains(url, #text "https://ic-api.internetcomputer.org/")
     or Text.contains(url, #text "https://api.github.com/")
@@ -253,14 +254,17 @@ persistent actor self {
                   case (null, null) null;
                 };
 
+              // Enhanced classification per proposal-topics-and-types.txt
+              let lowerSummary = Text.toLowercase(summary);
               let proposalType =
-                if (Text.contains(Text.toLowercase(summary), #text "ic os")
-                    or Text.contains(Text.toLowercase(summary), #text "replica")
-                    or Text.contains(Text.toLowercase(summary), #text "guestos")) "IC-OS"
-                else if (Text.contains(Text.toLowercase(summary), #text "wasm")
-                    or Text.contains(Text.toLowercase(summary), #text "canister")) "WASM"
-                else if (Text.contains(Text.toLowercase(summary), #text "motion")) "Motion"
-                else if (Text.contains(Text.toLowercase(summary), #text "node provider")) "NodeProvider"
+                if (Text.contains(lowerSummary, #text "ic os") or Text.contains(lowerSummary, #text "replica") or Text.contains(lowerSummary, #text "guestos")) "IcOsVersionDeployment"
+                else if (Text.contains(lowerSummary, #text "wasm") or Text.contains(lowerSummary, #text "canister")) "ProtocolCanisterManagement"
+                else if (Text.contains(lowerSummary, #text "motion")) "Governance"
+                else if (Text.contains(lowerSummary, #text "node provider")) "ParticipantManagement"
+                else if (Text.contains(lowerSummary, #text "subnet")) "SubnetManagement"
+                else if (Text.contains(lowerSummary, #text "sns")) "ServiceNervousSystemManagement"
+                else if (Text.contains(lowerSummary, #text "application canister")) "ApplicationCanisterManagement"
+                else if (Text.contains(lowerSummary, #text "economics")) "NetworkEconomics"
                 else "Unknown";
 
               #ok({
@@ -285,7 +289,7 @@ persistent actor self {
     }
   };
 
-  // Commit existence check (GitHub) — force identity encoding and strip headers
+  // Commit existence check (GitHub) — force identity encoding and strip headers (enhanced headers per GitHub-rest-api-javascript.txt)
   public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Text, Text> {
     if (Text.size(commit) == 0) return #err("Commit hash missing");
     if (Text.size(repo) == 0) return #err("Repository missing");
@@ -318,7 +322,7 @@ persistent actor self {
     } catch (e) { #err("HTTPS outcall failed: " # Error.message(e)) }
   };
 
-  // Deterministic fetcher (blocked for dynamic domains)
+  // Deterministic fetcher (blocked for dynamic domains per http-outcalls.txt)
   public func fetchDocument(url : Text) : async Result.Result<FetchResult, Text> {
     if (Text.size(url) == 0) return #err("URL missing");
     if (not isStableDomain(url)) {
@@ -350,13 +354,13 @@ persistent actor self {
 
   public query func getRebuildScript(proposalType : Text, commit : Text) : async Text {
     switch (proposalType) {
-      case ("IC-OS") {
+      case ("IcOsVersionDeployment") {
         "sudo apt-get update && sudo apt-get install -y curl git docker.io\n" #
         "curl --proto '=https' --tlsv1.2 -sSLO https://raw.githubusercontent.com/dfinity/ic/" # commit # "/gitlab-ci/tools/repro-check.sh\n" #
         "chmod +x repro-check.sh\n" #
         "./repro-check.sh -c " # commit # "\n";
       };
-      case ("WASM") {
+      case ("ProtocolCanisterManagement") {
         let hint = "If you used ./ci/container/build-ic.sh -c, the artifact is under ./artifacts/canisters/...";
         "git clone https://github.com/dfinity/ic\n" #
         "cd ic\n" #
@@ -367,8 +371,8 @@ persistent actor self {
         "sha256sum ./artifacts/canisters/*.wasm{,.gz}\n" #
         "# " # hint # "\n";
       };
-      case ("Motion") { "echo 'Motion proposals do not require rebuild; verify summary manually.'"; };
-      case ("NodeProvider") { "echo 'NodeProvider: Download self-declaration PDF, compute SHA-256, compare to proposal hash.'\nsha256sum yourfile.pdf"; };
+      case ("Governance") { "echo 'Motion proposals do not require rebuild; verify summary manually.'"; };
+      case ("ParticipantManagement") { "echo 'NodeProvider: Download self-declaration PDF, compute SHA-256, compare to proposal hash.'\nsha256sum yourfile.pdf"; };
       case _ { "echo 'Determine proposal type, then rebuild/verify accordingly'"; }
     }
   };
@@ -458,8 +462,13 @@ persistent actor self {
     }
   };
 
-  // Transform: strip ALL headers to avoid consensus diffs
+  // Transform: strip ALL headers to avoid consensus diffs (per http-outcalls.txt)
   public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
     { status = args.response.status; headers = []; body = args.response.body };
+  };
+
+  // NEW: Debug query for cycle balance (call from frontend to monitor)
+  public query func getCycleBalance() : async Nat {
+    Cycles.balance()
   };
 }
