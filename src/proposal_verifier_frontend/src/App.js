@@ -10,7 +10,7 @@ const CORS_ALLOWED_HOSTS = new Set([
 ]);
 
 // find any 64-hex near likely markers (enhanced with more from Verify-Proposals.txt)
-function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash', 'sha-256', 'sha256sum', 'wasm hash', 'module hash']) {
+function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash', 'sha-256', 'sha256sum', 'wasm hash', 'module hash', 'sha256 hash', 'module sha256']) {
   const HEX64 = /[A-Fa-f0-9]{64}/g;
   for (const m of markers) {
     const idx = text.toLowerCase().indexOf(m.toLowerCase());
@@ -72,26 +72,43 @@ class App {
     };
   }
 
-  // Fallback copy function (fixes Clipboard API error on HTTP/local)
-  #copyToClipboard(text) {
-    try {
-      navigator.clipboard.writeText(text).then(() => alert('Copied!'));
-    } catch {
-      // Fallback for HTTP or blocked contexts
+  async #handleCopy(e, text, originalLabel) {
+    const button = e.target;
+    const fallbackCopy = () => {
       const ta = document.createElement('textarea');
-      ta.value = text;
+      ta.value = text || '';
       ta.style.position = 'fixed';
       ta.style.opacity = 0;
       document.body.appendChild(ta);
+      ta.focus();
       ta.select();
       try {
-        document.execCommand('copy');
-        alert('Copied (fallback method)!');
+        const ok = document.execCommand('copy');
+        if (ok) {
+          button.innerText = 'Copied!';
+          setTimeout(() => { button.innerText = originalLabel; }, 2000);
+        } else {
+          alert('Copy failed. Select the text and press Ctrl/Cmd+C.');
+        }
       } catch (err) {
-        alert('Copy failed: ' + err.message);
+        alert('Copy failed: ' + (err?.message || String(err)));
       } finally {
         document.body.removeChild(ta);
       }
+    };
+
+    try {
+      // Only try Clipboard API in secure contexts and when available
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text || '');
+        button.innerText = 'Copied!';
+        setTimeout(() => { button.innerText = originalLabel; }, 2000);
+      } else {
+        fallbackCopy();
+      }
+    } catch {
+      // Blocked by Permissions-Policy or user denied — use fallback
+      fallbackCopy();
     }
   }
 
@@ -323,7 +340,7 @@ class App {
         </form>
 
         <!-- <button @click=${() => this.#handleCheckCycles()}>Check Backend Cycles</button> -->
-        <!-- <p><b>Cycles:</b> ${this.cycleBalance ?? '(Click to check)'}</p> --> <!-- NEW -->
+        <!-- <p><b>Cycles:</b> ${this.cycleBalance ?? '(Click to check)'}</p> --> 
 
         ${p ? html`
           <section>
@@ -333,7 +350,7 @@ class App {
             <p><b>Title:</b> ${p.title || '(none)'} </p>
             <p><b>Summary (raw):</b></p>
             <pre>${p.summary}</pre>
-            <button @click=${() => this.#copyToClipboard(p.summary)}>Copy Summary</button>
+            <button @click=${(e) => this.#handleCopy(e, p.summary, 'Copy Summary')}>Copy Summary</button>
 
             <p><b>Extracted Repo:</b> ${p.extractedRepo ?? 'None'}</p>
             <p><b>Extracted Commit:</b> ${p.extractedCommit ?? 'None'}</p>
@@ -373,14 +390,14 @@ class App {
           <section>
             <h2>Payload (from Dashboard/API)</h2>
             <pre>${this.payloadSnippetFromDashboard ?? '(no payload snippet found from ic-api)'}</pre>
-            <button @click=${() => this.#copyToClipboard(this.payloadSnippetFromDashboard || '')}>Copy Payload</button>
+            <button @click=${(e) => this.#handleCopy(e, this.payloadSnippetFromDashboard || '', 'Copy Payload')}>Copy Payload</button>
           </section>
 
           <section>
             <h2>Rebuild Locally</h2>
             ${p.extractedArtifact ? html`<p><b>Artifact (expected):</b> ${p.extractedArtifact}</p>` : ''}
             <pre>${this.rebuildScript}</pre>
-            <button @click=${() => this.#copyToClipboard(this.rebuildScript)}>Copy Script</button>
+            <button @click=${(e) => this.#handleCopy(e, this.rebuildScript, 'Copy Script')}>Copy Script</button>
             <p>Compare your local <code>sha256sum</code> with the on-chain / dashboard hash.</p>
           </section>
 

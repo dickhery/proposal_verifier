@@ -27,7 +27,11 @@ export default defineConfig({
     esbuildOptions: { define: { global: 'globalThis' } },
   },
   server: {
-    headers: { 'Content-Security-Policy': DEV_CSP },
+    headers: {
+      'Content-Security-Policy': DEV_CSP,
+      // Allow Clipboard API in dev
+      'Permissions-Policy': 'clipboard-read=(self), clipboard-write=(self)',
+    },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:4943',
