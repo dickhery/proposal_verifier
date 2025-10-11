@@ -14,7 +14,7 @@ import Char "mo:base/Char";
 // Remove 'persistent' as no stable vars; reduces potential overhead
 persistent actor self {
   // -----------------------------
-  // Types for HTTPS outcalls (enhanced per http-outcalls.txt)
+  // Types for HTTPS outcalls
   // -----------------------------
   type HttpHeader = { name : Text; value : Text };
   type TransformContext = {
@@ -34,7 +34,7 @@ persistent actor self {
   type FetchResult = { body : Blob; headers : [HttpHeader] };
 
   // -----------------------------
-  // NNS governance types (subset from IDL)
+  // NNS governance types (subset)
   // -----------------------------
   module GovernanceTypes {
     public type ProposalId = { id : Nat64 };
@@ -52,14 +52,17 @@ persistent actor self {
     extractedDocUrl : ?Text;
     extractedRepo : ?Text;
     extractedArtifact : ?Text;
-    proposalType : Text; // Enhanced classification per proposal-topics-and-types.txt
+    proposalType : Text;
+    // NEW
+    extractedUrls : [Text];
+    commitUrl : ?Text;
   };
 
   public type AugmentedProposalInfo = {
     base : SimplifiedProposalInfo;
-    expectedHashFromDashboard : ?Text;     // from ic-api JSON
-    payloadSnippetFromDashboard : ?Text;   // short JSON snippet for UI
-    expectedHashSource : ?Text;            // e.g. "ic-api"
+    expectedHashFromDashboard : ?Text;
+    payloadSnippetFromDashboard : ?Text;
+    expectedHashSource : ?Text;
     dashboardUrl : Text;
   };
 
@@ -76,7 +79,7 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Text helpers (enhanced with more markers per base-text.txt and Verify-Proposals.txt)
+  // Text helpers
   // -----------------------------
   func textSlice(t : Text, from : Nat, to : Nat) : Text {
     let chars = Text.toArray(t);
@@ -138,7 +141,7 @@ persistent actor self {
     }
   };
 
-  // Extract GitHub repo+commit if it appears in the summary (enhanced parsing per base-text.txt)
+  // Extract GitHub repo+commit if it appears in the summary
   func extractGithubRepoAndCommit(summary : Text) : (?Text, ?Text) {
     let marker = "https://github.com/";
     var posOpt = indexOf(summary, marker);
@@ -185,7 +188,7 @@ persistent actor self {
         };
         case null {};
       };
-      posOpt := switch (indexOf(textSlice(summary, pos + 1, Text.size(summary)), marker)) {
+      posOpt := switch (indexOf(textSlice(summary, pos + 1, Text.size(summary)), "https://github.com/")) {
         case null null;
         case (?nx) ?(nx + pos + 1);
       };
@@ -193,7 +196,7 @@ persistent actor self {
     (null, null)
   };
 
-  // Artifact hint in summaries produced by CI (enhanced)
+  // Artifact hint in summaries produced by CI
   func extractArtifactPath(summary : Text) : ?Text {
     let needle = "sha256sum ./artifacts/canisters/";
     switch (indexOf(summary, needle)) {
@@ -212,7 +215,7 @@ persistent actor self {
     }
   };
 
-  // Only call deterministic/text/json providers here (per http-outcalls.txt)
+  // Only call deterministic/text/json providers here
   func isStableDomain(url : Text) : Bool {
     Text.contains(url, #text "https://ic-api.internetcomputer.org/")
     or Text.contains(url, #text "https://api.github.com/")
@@ -220,7 +223,103 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Core getters (enhanced)
+  // URL extraction (NEW)
+  // -----------------------------
+  func sanitizeUrl(raw : Text) : Text {
+    // Remove trailing punctuation and unbalanced ')'
+    var s = raw;
+
+    // Helper: is a trailing punctuation we want to trim?
+    func isTrimChar(c : Char) : Bool {
+      let n = Char.toNat32(c);
+      // ) ] } . , ; : ' " `
+      n == 41      // ')'
+      or n == 93   // ']'
+      or n == 125  // '}'
+      or n == 46   // '.'
+      or n == 44   // ','
+      or n == 59   // ';'
+      or n == 58   // ':'
+      or n == 39   // '\''
+      or n == 34   // '"'
+      or n == 96;  // '`'
+    };
+
+    // Trim trailing punctuation commonly stuck to URLs
+    label trim_loop loop {
+      if (Text.size(s) == 0) break trim_loop;
+      let last = Text.toArray(s)[Text.size(s) - 1];
+      if (isTrimChar(last)) {
+        s := textSlice(s, 0, Text.size(s) - 1);
+      } else break trim_loop;
+    };
+
+    // Remove extra closing ')' if more ')' than '('
+    func countChar(t : Text, c : Char) : Nat {
+      var k : Nat = 0;
+      for (ch in t.chars()) { if (ch == c) k += 1 };
+      k
+    };
+    var opens = countChar(s, '(');
+    var closes = countChar(s, ')');
+    label fix_paren loop {
+      if (closes > opens and Text.size(s) > 0 and Text.toArray(s)[Text.size(s) - 1] == ')') {
+        s := textSlice(s, 0, Text.size(s) - 1);
+        closes -= 1;
+      } else break fix_paren;
+    };
+
+    s
+  };
+
+  func extractAllUrls(t : Text) : [Text] {
+    let n = Text.size(t);
+    var i : Nat = 0;
+    var acc : [Text] = [];
+    func isHttpStart(at : Nat) : Bool {
+      let max8 = Nat.min(n, at + 8);
+      let slice8 = textSlice(t, at, max8);
+      Text.contains(slice8, #text "https://") or Text.contains(slice8, #text "http://")
+    };
+    while (i < n) {
+      if (isHttpStart(i)) {
+        // start at i, advance until whitespace
+        var j = i;
+        label adv while (j < n) {
+          let ch = Text.toArray(t)[j];
+          if (ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t') break adv;
+          j += 1;
+        };
+        let raw = textSlice(t, i, j);
+        let clean = sanitizeUrl(raw);
+        // Dedup
+        var exists = false;
+        for (u in acc.vals()) { if (u == clean) { exists := true } };
+        if (not exists and Text.size(clean) > 0) {
+          acc := Array.append<Text>(acc, [clean]);
+        };
+        i := j;
+      } else {
+        i += 1;
+      }
+    };
+    acc
+  };
+
+  func chooseDocUrl(urls : [Text]) : ?Text {
+    // Prefer dashboard release links, then GitHub/raw links, else first found
+    var pick : ?Text = null;
+    for (u in urls.vals()) {
+      if (Text.contains(Text.toLowercase(u), #text "dashboard.internetcomputer.org/release")) return ?u;
+    };
+    for (u in urls.vals()) {
+      if (Text.contains(u, #text "https://raw.githubusercontent.com/") or Text.contains(u, #text "https://github.com/")) return ?u;
+    };
+    if (Array.size(urls) > 0) ?urls[0] else null
+  };
+
+  // -----------------------------
+  // Core getters
   // -----------------------------
   public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) return #err("Proposal id must be greater than zero");
@@ -238,12 +337,9 @@ persistent actor self {
               let commit40Opt = findFirst40Hex(summary);
               let sha256Opt = findFirst64Hex(summary);
 
-              // crude “first URL” extraction for docs link
-              let docUrlOpt =
-                switch (indexOf(summary, "https://")) {
-                  case (?p2) ?textSlice(summary, p2, Nat.min(Text.size(summary), p2 + 200));
-                  case null null;
-                };
+              // Robust URL extraction from summary
+              let urls = extractAllUrls(summary);
+              let docUrlOpt = chooseDocUrl(urls);
 
               let artifactOpt = extractArtifactPath(summary);
               let repoFinal = switch (repoFromUrlOpt) { case (?r) ?r; case null null };
@@ -254,7 +350,13 @@ persistent actor self {
                   case (null, null) null;
                 };
 
-              // Enhanced classification per proposal-topics-and-types.txt
+              // Build commit URL if we have repo + commit
+              let commitUrlOpt : ?Text = switch (repoFinal, commitFinal) {
+                case (?r, ?c) ?("https://github.com/" # r # "/commit/" # c);
+                case _ null;
+              };
+
+              // Enhanced classification by simple keyword scan
               let lowerSummary = Text.toLowercase(summary);
               let proposalType =
                 if (Text.contains(lowerSummary, #text "ic os") or Text.contains(lowerSummary, #text "replica") or Text.contains(lowerSummary, #text "guestos")) "IcOsVersionDeployment"
@@ -278,6 +380,8 @@ persistent actor self {
                 extractedRepo = repoFinal;
                 extractedArtifact = artifactOpt;
                 proposalType;
+                extractedUrls = urls;
+                commitUrl = commitUrlOpt;
               })
             };
             case _ { #err("Proposal missing summary data") };
@@ -289,7 +393,7 @@ persistent actor self {
     }
   };
 
-  // Commit existence check (GitHub) — force identity encoding and strip headers (enhanced headers per GitHub-rest-api-javascript.txt)
+  // Commit existence check (GitHub)
   public func checkGitCommit(repo : Text, commit : Text) : async Result.Result<Text, Text> {
     if (Text.size(commit) == 0) return #err("Commit hash missing");
     if (Text.size(repo) == 0) return #err("Repository missing");
@@ -322,7 +426,7 @@ persistent actor self {
     } catch (e) { #err("HTTPS outcall failed: " # Error.message(e)) }
   };
 
-  // Deterministic fetcher (blocked for dynamic domains per http-outcalls.txt)
+  // Deterministic fetcher (blocked for dynamic domains)
   public func fetchDocument(url : Text) : async Result.Result<FetchResult, Text> {
     if (Text.size(url) == 0) return #err("URL missing");
     if (not isStableDomain(url)) {
@@ -378,7 +482,7 @@ persistent actor self {
   };
 
   // -----------------------------
-  // Dashboard API (ic-api) helpers (enhanced markers)
+  // Dashboard API helpers
   // -----------------------------
   func fetchIcApiProposalJsonText(id : Nat64) : async ?Text {
     let url = "https://ic-api.internetcomputer.org/api/v3/proposals/" # Nat64.toText(id);
@@ -462,7 +566,7 @@ persistent actor self {
     }
   };
 
-  // Transform: strip ALL headers to avoid consensus diffs (per http-outcalls.txt)
+  // Transform: strip ALL headers to avoid consensus diffs
   public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
     { status = args.response.status; headers = []; body = args.response.body };
   };

@@ -7,10 +7,25 @@ const CORS_ALLOWED_HOSTS = new Set([
   'ic-api.internetcomputer.org',
   'api.github.com',
   'raw.githubusercontent.com',
+  'dashboard.internetcomputer.org',
 ]);
 
-// find any 64-hex near likely markers (enhanced with more from Verify-Proposals.txt)
-function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm_module_hash', 'sha256', 'hash', 'sha-256', 'sha256sum', 'wasm hash', 'module hash', 'sha256 hash', 'module sha256']) {
+// find any 64-hex near likely markers
+function extractHexFromTextAroundMarkers(
+  text,
+  markers = [
+    'expected_hash',
+    'wasm_module_hash',
+    'sha256',
+    'hash',
+    'sha-256',
+    'sha256sum',
+    'wasm hash',
+    'module hash',
+    'sha256 hash',
+    'module sha256',
+  ],
+) {
   const HEX64 = /[A-Fa-f0-9]{64}/g;
   for (const m of markers) {
     const idx = text.toLowerCase().indexOf(m.toLowerCase());
@@ -26,9 +41,27 @@ function extractHexFromTextAroundMarkers(text, markers = ['expected_hash', 'wasm
   return any ? any[0] : null;
 }
 
-function extractAllUrls(text) {
-  const re = /\bhttps?:\/\/[^\s)>"']+/gi;
-  return [...new Set((text.match(re) || []).map(s => s.replace(/[),.]+$/, '')))];
+// A stricter URL extractor for any UI parsing we still do client-side
+export function extractAllUrls(text) {
+  // whitespace-bounded raw URLs, then sanitize common trailing punctuation
+  const raw = text.match(/\bhttps?:\/\/[^\s]+/gi) || [];
+  const sanitized = raw.map((u) => {
+    let s = u;
+    // trim trailing punctuation
+    while (/[)\]\}\.,;:'"`]$/.test(s)) s = s.slice(0, -1);
+    // drop extra unmatched right parens
+    const left = (s.match(/\(/g) || []).length;
+    const right = (s.match(/\)/g) || []).length;
+    while (right > left && s.endsWith(')')) {
+      s = s.slice(0, -1);
+      // eslint-disable-next-line no-loop-func
+      const rr = (s.match(/\)/g) || []).length;
+      const ll = (s.match(/\(/g) || []).length;
+      if (rr <= ll) break;
+    }
+    return s;
+  });
+  return [...new Set(sanitized)];
 }
 
 class App {
@@ -41,7 +74,7 @@ class App {
   docPreview = '';
   rebuildScript = '';
   isFetching = false;
-  cycleBalance = null; // NEW: For debugging cycles
+  cycleBalance = null;
 
   expectedHash = null;
   expectedHashSource = null;
@@ -54,7 +87,7 @@ class App {
     commit: false,
     hash: false,
     expected: false,
-    rebuild: false, // manual
+    rebuild: false,
   };
 
   constructor() { this.#render(); }
@@ -68,7 +101,7 @@ class App {
       commit: this.commitStatus.startsWith('✅'),
       hash: this.hashMatch || this.docHashMatch,
       expected: !!this.expectedHash,
-      rebuild: false, // user self-reports
+      rebuild: false,
     };
   }
 
@@ -98,7 +131,6 @@ class App {
     };
 
     try {
-      // Only try Clipboard API in secure contexts and when available
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text || '');
         button.innerText = 'Copied!';
@@ -107,7 +139,6 @@ class App {
         fallbackCopy();
       }
     } catch {
-      // Blocked by Permissions-Policy or user denied — use fallback
       fallbackCopy();
     }
   }
@@ -122,11 +153,13 @@ class App {
       const id = parseInt(idEl.value);
 
       const aug = await proposal_verifier_backend.getProposalAugmented(BigInt(id));
-      if (aug.err) throw new Error(aug.err || 'Unknown error from backend'); // Enhanced error
+      if (aug.err) throw new Error(aug.err || 'Unknown error from backend');
 
       const unwrap = (opt) => opt?.[0] ?? null;
       const data = aug.ok;
       const base = data.base;
+
+      const extractedUrls = base.extractedUrls || [];
 
       this.proposalData = {
         id: Number(base.id),
@@ -139,6 +172,9 @@ class App {
         extractedRepo: unwrap(base.extractedRepo),
         extractedArtifact: unwrap(base.extractedArtifact),
         proposalType: base.proposalType,
+        // NEW
+        extractedUrls,
+        commitUrl: unwrap(base.commitUrl),
       };
 
       this.expectedHash = unwrap(data.expectedHashFromDashboard) || this.proposalData.extractedHash || null;
@@ -147,7 +183,7 @@ class App {
       this.payloadSnippetFromDashboard = unwrap(data.payloadSnippetFromDashboard);
       this.dashboardUrl = data.dashboardUrl;
 
-      // Commit check (canister first, then browser fallback on any error)
+      // Commit check (canister first, then browser fallback)
       this.commitStatus = '';
       const repo = this.proposalData.extractedRepo || 'dfinity/ic';
       const commit = this.proposalData.extractedCommit || '';
@@ -156,7 +192,6 @@ class App {
         if (commitResult.ok) {
           this.commitStatus = `✅ Commit exists on ${repo}@${commit.substring(0, 12)}`;
         } else {
-          // Browser fallback if the canister failed to reach consensus or rate-limited
           const ok = await this.#checkCommitInBrowser(repo, commit);
           this.commitStatus = ok
             ? `✅ Commit exists on ${repo}@${commit.substring(0, 12)} (browser fallback)`
@@ -172,9 +207,11 @@ class App {
         this.proposalData.extractedCommit || ''
       );
 
-      // OPTIONAL: Try client-side fetch only from CORS-friendly hosts to discover expected hash
+      // OPTIONAL: client-side discovery of expected hash from CORS-friendly URLs
       if (!this.expectedHash) {
-        const urls = extractAllUrls(this.proposalData.summary);
+        const urls = this.proposalData.extractedUrls.length
+          ? this.proposalData.extractedUrls
+          : extractAllUrls(this.proposalData.summary);
         for (const u of urls) {
           const { hostname } = new URL(u);
           if (!CORS_ALLOWED_HOSTS.has(hostname)) continue;
@@ -265,7 +302,6 @@ class App {
           this.docPreview = `${contentType || 'binary'} (${bodyArray.length} bytes)`;
         }
       } else {
-        // If canister refused (non-deterministic), try browser fetch (requires CORS)
         const { hostname } = new URL(url);
         if (!CORS_ALLOWED_HOSTS.has(hostname)) {
           throw new Error(`CORS likely blocked by ${hostname}. Try downloading manually and hashing locally.`);
@@ -314,7 +350,6 @@ class App {
     this.#render();
   }
 
-  // NEW: Fetch cycle balance from backend
   async #handleCheckCycles() {
     try {
       this.cycleBalance = await proposal_verifier_backend.getCycleBalance();
@@ -322,6 +357,29 @@ class App {
       this.cycleBalance = 'Error: ' + (err.message || String(err));
     }
     this.#render();
+  }
+
+  #renderLinks() {
+    const p = this.proposalData;
+    if (!p) return null;
+
+    const set = new Set();
+    const push = (u) => { if (u && !set.has(u)) set.add(u); };
+
+    push(p.url);
+    push(this.dashboardUrl);
+    push(p.extractedDocUrl);
+    push(p.commitUrl);
+    (p.extractedUrls || []).forEach(push);
+
+    const links = [...set.values()];
+    if (!links.length) return html`<p>(no links found)</p>`;
+
+    return html`
+      <ul class="links">
+        ${links.map(u => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`)}
+      </ul>
+    `;
   }
 
   #render() {
@@ -339,9 +397,6 @@ class App {
           </button>
         </form>
 
-        <!-- <button @click=${() => this.#handleCheckCycles()}>Check Backend Cycles</button> -->
-        <!-- <p><b>Cycles:</b> ${this.cycleBalance ?? '(Click to check)'}</p> --> 
-
         ${p ? html`
           <section>
             <h2>Proposal Details</h2>
@@ -353,18 +408,37 @@ class App {
             <button @click=${(e) => this.#handleCopy(e, p.summary, 'Copy Summary')}>Copy Summary</button>
 
             <p><b>Extracted Repo:</b> ${p.extractedRepo ?? 'None'}</p>
-            <p><b>Extracted Commit:</b> ${p.extractedCommit ?? 'None'}</p>
+            <p><b>Extracted Commit:</b>
+              ${p.extractedCommit
+                ? p.commitUrl
+                  ? html`<a href="${p.commitUrl}" target="_blank" rel="noreferrer">${p.extractedCommit}</a>`
+                  : p.extractedCommit
+                : 'None'}
+            </p>
 
             <p><b>Expected Hash (from Sources):</b> ${this.expectedHash ?? 'None'}
               ${this.expectedHash ? html`<em>(source: ${this.expectedHashSource || 'unknown'})</em>` : ''}</p>
 
-            <p><b>Extracted Doc URL:</b> ${p.extractedDocUrl ?? 'None'}</p>
+            <p><b>Extracted Doc URL:</b>
+              ${p.extractedDocUrl
+                ? html`<a href="${p.extractedDocUrl}" target="_blank" rel="noreferrer">${p.extractedDocUrl}</a>`
+                : 'None'}
+            </p>
             <p><b>Artifact Path Hint:</b> ${p.extractedArtifact ?? 'None'}</p>
-            <p><b>Commit Status:</b> ${this.commitStatus}</p>
+
+            <p><b>Commit Status:</b>
+              ${this.commitStatus}
+              ${p.commitUrl ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer">open</a>)` : ''}
+            </p>
 
             ${this.dashboardUrl
               ? html`<p><b>Dashboard:</b> <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer">${this.dashboardUrl}</a></p>`
               : ''}
+          </section>
+
+          <section>
+            <h2>Relevant Links</h2>
+            ${this.#renderLinks()}
           </section>
 
           <section>
