@@ -1,4 +1,3 @@
-```markdown
 # Proposal Verifier
 
 This project is a tool designed to help users verify proposals on the Internet Computer Protocol (ICP) blockchain, specifically those submitted to the Network Nervous System (NNS) governance canister. It assists in fetching proposal details, extracting key information like Git commits, hashes, and URLs, and guiding users through verification steps. The tool aims to make proposal verification accessible to beginners by automating parts of the process and providing clear instructions for manual steps.
@@ -170,4 +169,3 @@ Feel free to fork and improve! Focus on beginner-friendliness. Submit PRs with c
 - [DFINITY Forum: Proposal Discussions](https://forum.dfinity.org/c/governance/nns-proposal-discussion/33)
 
 This tool promotes decentralized governance—verify proposals to contribute!
-```
