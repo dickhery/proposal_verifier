@@ -13,6 +13,7 @@ const DEV_CSP =
   "https://icp-api.io https://ic-api.internetcomputer.org " +
   "https://api.github.com https://raw.githubusercontent.com " +
   "https://forum.dfinity.org https://dashboard.internetcomputer.org " +
+  "https://download.dfinity.systems https://download.dfinity.network " +
   "data: blob:; " +
   "img-src 'self' data: https:; " +
   "style-src 'self' 'unsafe-inline'; " +
@@ -29,7 +30,6 @@ export default defineConfig({
   server: {
     headers: {
       'Content-Security-Policy': DEV_CSP,
-      // Allow Clipboard API in dev
       'Permissions-Policy': 'clipboard-read=(self), clipboard-write=(self)',
     },
     proxy: {

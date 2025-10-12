@@ -11,7 +11,6 @@ import Result "mo:base/Result";
 import Text "mo:base/Text";
 import Char "mo:base/Char";
 
-// Remove 'persistent' as no stable vars; reduces potential overhead
 persistent actor self {
   // -----------------------------
   // Types for HTTPS outcalls

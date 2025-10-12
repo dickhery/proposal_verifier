@@ -2,7 +2,7 @@ import { html, render } from 'lit-html';
 import { proposal_verifier_backend } from 'declarations/proposal_verifier_backend';
 import { sha256 } from './utils.js';
 
-// Hosts that usually allow cross-origin browser fetches.
+// CORS-friendly hosts for browser fetches
 const CORS_ALLOWED_HOSTS = new Set([
   'ic-api.internetcomputer.org',
   'api.github.com',
@@ -10,20 +10,18 @@ const CORS_ALLOWED_HOSTS = new Set([
   'dashboard.internetcomputer.org',
 ]);
 
-// find any 64-hex near likely markers
+// Regex helper to spot release package links in payloads
+const RELEASE_URL_RE = /https:\/\/download\.dfinity\.(?:systems|network)\/ic\/[0-9a-f]{40}\/[^"'\s]+/ig;
+
+// Find a 64-hex near helpful markers
 function extractHexFromTextAroundMarkers(
   text,
   markers = [
+    'release_package_sha256_hex',
     'expected_hash',
     'wasm_module_hash',
     'sha256',
-    'hash',
-    'sha-256',
-    'sha256sum',
-    'wasm hash',
-    'module hash',
-    'sha256 hash',
-    'module sha256',
+    'hash'
   ],
 ) {
   const HEX64 = /[A-Fa-f0-9]{64}/g;
@@ -41,23 +39,16 @@ function extractHexFromTextAroundMarkers(
   return any ? any[0] : null;
 }
 
-// A stricter URL extractor for any UI parsing we still do client-side
+// Conservative URL extractor + sanitization
 export function extractAllUrls(text) {
-  // whitespace-bounded raw URLs, then sanitize common trailing punctuation
   const raw = text.match(/\bhttps?:\/\/[^\s]+/gi) || [];
   const sanitized = raw.map((u) => {
     let s = u;
-    // trim trailing punctuation
     while (/[)\]\}\.,;:'"`]$/.test(s)) s = s.slice(0, -1);
-    // drop extra unmatched right parens
     const left = (s.match(/\(/g) || []).length;
     const right = (s.match(/\)/g) || []).length;
     while (right > left && s.endsWith(')')) {
       s = s.slice(0, -1);
-      // eslint-disable-next-line no-loop-func
-      const rr = (s.match(/\)/g) || []).length;
-      const ll = (s.match(/\(/g) || []).length;
-      if (rr <= ll) break;
     }
     return s;
   });
@@ -82,6 +73,9 @@ class App {
   payloadSnippetFromDashboard = null;
   dashboardUrl = '';
 
+  // NEW
+  releasePackageUrls = [];
+
   checklist = {
     fetch: false,
     commit: false,
@@ -101,7 +95,7 @@ class App {
       commit: this.commitStatus.startsWith('✅'),
       hash: this.hashMatch || this.docHashMatch,
       expected: !!this.expectedHash,
-      rebuild: false,
+      rebuild: this.checklist.rebuild || false,
     };
   }
 
@@ -121,7 +115,7 @@ class App {
           button.innerText = 'Copied!';
           setTimeout(() => { button.innerText = originalLabel; }, 2000);
         } else {
-          alert('Copy failed. Select the text and press Ctrl/Cmd+C.');
+          alert('Copy failed. Select and press Ctrl/Cmd+C.');
         }
       } catch (err) {
         alert('Copy failed: ' + (err?.message || String(err)));
@@ -143,6 +137,37 @@ class App {
     }
   }
 
+  async #prefillFromIcApi(id) {
+    try {
+      const url = `https://ic-api.internetcomputer.org/api/v3/proposals/${id}`;
+      const res = await fetch(url, { credentials: 'omit', mode: 'cors' });
+      if (!res.ok) return;
+
+      const text = await res.text();
+
+      // 1) expected hash (covers release_package_sha256_hex / expected_hash)
+      const maybe = extractHexFromTextAroundMarkers(text);
+      if (maybe) {
+        this.expectedHash = maybe;
+        this.expectedHashSource = 'ic-api';
+      }
+
+      // 2) release package URLs
+      const urls = new Set();
+      const payloadUrls = text.match(RELEASE_URL_RE) || [];
+      payloadUrls.forEach(u => urls.add(u));
+      // also fallback: grab any URLs then filter
+      extractAllUrls(text)
+        .filter(u => /https:\/\/download\.dfinity\.(systems|network)\//.test(u))
+        .forEach(u => urls.add(u));
+      this.releasePackageUrls = Array.from(urls);
+
+      this.#render();
+    } catch {
+      // ignore ic-api failures; UI still works
+    }
+  }
+
   async #handleFetchProposal(e) {
     e.preventDefault();
     if (this.isFetching) return;
@@ -152,6 +177,7 @@ class App {
       const idEl = document.getElementById('proposalId');
       const id = parseInt(idEl.value);
 
+      // Get augmented summary (commit, urls, rough expected hash/snippet)
       const aug = await proposal_verifier_backend.getProposalAugmented(BigInt(id));
       if (aug.err) throw new Error(aug.err || 'Unknown error from backend');
 
@@ -172,7 +198,6 @@ class App {
         extractedRepo: unwrap(base.extractedRepo),
         extractedArtifact: unwrap(base.extractedArtifact),
         proposalType: base.proposalType,
-        // NEW
         extractedUrls,
         commitUrl: unwrap(base.commitUrl),
       };
@@ -182,6 +207,9 @@ class App {
 
       this.payloadSnippetFromDashboard = unwrap(data.payloadSnippetFromDashboard);
       this.dashboardUrl = data.dashboardUrl;
+
+      // Prefill from ic-api (try to find release_package_sha256_hex & URLs)
+      await this.#prefillFromIcApi(id);
 
       // Commit check (canister first, then browser fallback)
       this.commitStatus = '';
@@ -206,19 +234,6 @@ class App {
         this.proposalData.proposalType,
         this.proposalData.extractedCommit || ''
       );
-
-      // OPTIONAL: client-side discovery of expected hash from CORS-friendly URLs
-      if (!this.expectedHash) {
-        const urls = this.proposalData.extractedUrls.length
-          ? this.proposalData.extractedUrls
-          : extractAllUrls(this.proposalData.summary);
-        for (const u of urls) {
-          const { hostname } = new URL(u);
-          if (!CORS_ALLOWED_HOSTS.has(hostname)) continue;
-          const found = await this.#tryClientSideHint(u);
-          if (found) break;
-        }
-      }
 
       this.#updateChecklist();
     } catch (err) {
@@ -247,6 +262,8 @@ class App {
 
   async #tryClientSideHint(url) {
     try {
+      const { hostname } = new URL(url);
+      if (!CORS_ALLOWED_HOSTS.has(hostname)) return false;
       const res = await fetch(url, { credentials: 'omit', mode: 'cors' });
       if (!res.ok) return false;
       const ct = res.headers.get('content-type') || '';
@@ -263,7 +280,7 @@ class App {
         return true;
       }
     } catch {
-      // ignore CORS/network errors
+      // ignore
     }
     return false;
   }
@@ -289,7 +306,6 @@ class App {
     this.docHashError = '';
     this.docPreview = '';
     try {
-      // Try canister fetch first (deterministic sources only)
       const result = await proposal_verifier_backend.fetchDocument(url);
       if (result.ok) {
         const bodyArray = new Uint8Array(result.ok.body);
@@ -302,9 +318,10 @@ class App {
           this.docPreview = `${contentType || 'binary'} (${bodyArray.length} bytes)`;
         }
       } else {
+        // Non-deterministic or CORS-blocked domain; try direct browser fetch if allowed
         const { hostname } = new URL(url);
         if (!CORS_ALLOWED_HOSTS.has(hostname)) {
-          throw new Error(`CORS likely blocked by ${hostname}. Try downloading manually and hashing locally.`);
+          throw new Error(`CORS likely blocked by ${hostname}. Use the shell commands below to download, then upload the file here.`);
         }
         const fallback = await fetch(url, { credentials: 'omit', mode: 'cors' });
         if (!fallback.ok) throw new Error(result.err || `HTTP ${fallback.status}`);
@@ -382,6 +399,29 @@ class App {
     `;
   }
 
+  #renderReleaseCommands() {
+    if (!this.releasePackageUrls.length) return null;
+    const expected = this.expectedHash || '';
+    const cmds = this.releasePackageUrls.map((u, idx) => {
+      const fname = `update-img-${idx + 1}.tar.zst`;
+      return {
+        url: u,
+        cmd: `curl -fsSL "${u}" -o ${fname}\nsha256sum ${fname}  # expect ${expected}`
+      };
+    });
+    return html`
+      <section>
+        <h2>Release Package URLs & Quick Verify</h2>
+        <ul class="links">
+          ${this.releasePackageUrls.map(u => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`)}
+        </ul>
+        <p><b>Shell commands (download & hash locally):</b></p>
+        <pre>${cmds.map(x => `# ${x.url}\n${x.cmd}`).join('\n\n')}</pre>
+        <button @click=${(e) => this.#handleCopy(e, cmds.map(x => x.cmd).join('\n\n'), 'Copy Commands')}>Copy Commands</button>
+      </section>
+    `;
+  }
+
   #render() {
     const p = this.proposalData;
     const loading = this.isFetching;
@@ -391,7 +431,7 @@ class App {
         <h1>IC Proposal Verifier</h1>
         <form @submit=${(e) => this.#handleFetchProposal(e)}>
           <label>Proposal ID:</label>
-          <input id="proposalId" type="number" placeholder="e.g. 138887" ?disabled=${loading} />
+          <input id="proposalId" type="number" placeholder="e.g. 138908" ?disabled=${loading} />
           <button type="submit" class=${loading ? 'loading' : ''} ?disabled=${loading}>
             ${loading ? 'Fetching…' : 'Fetch Proposal'}
           </button>
@@ -441,9 +481,19 @@ class App {
             ${this.#renderLinks()}
           </section>
 
+          ${this.#renderReleaseCommands()}
+
           <section>
             <h2>Verify Args Hash</h2>
-            <textarea id="args" placeholder="Paste proposal args (or doc text) to hash"></textarea>
+            <details style="margin-bottom:8px;">
+              <summary>What goes here?</summary>
+              <p>
+                Paste the exact <b>argument bytes or text</b> of the proposal to compute its SHA-256 and compare.
+                For <b>IC-OS Version Election</b> proposals, the important hash is the <i>release package</i>
+                (see the section above and “Verify Linked Document”). You can skip this box for OS elections.
+              </p>
+            </details>
+            <textarea id="args" placeholder="Paste proposal args (or bytes as text) to hash"></textarea>
             <input id="expectedHash" placeholder="Expected SHA-256 (hex, 64 chars)" value=${this.expectedHash || ''} />
             <button @click=${() => this.#handleVerifyHash()}>Verify</button>
             <p><b>Match:</b> ${this.hashMatch ? '✅ Yes' : '❌ No'}</p>
@@ -452,6 +502,14 @@ class App {
 
           <section>
             <h2>Verify Linked Document / Local File</h2>
+            <details style="margin-bottom:8px;">
+              <summary>What goes here?</summary>
+              <p>
+                Use this for <b>downloadable artifacts</b> referenced by the proposal (e.g. HostOS/GuestOS
+                <code>update-img.tar.zst</code>, PDFs, or WASMs). Enter a URL (works for CORS-friendly domains) <i>or</i> upload the downloaded file.
+                Large binaries are best downloaded with the provided shell commands; then upload the file here for a GUI check.
+              </p>
+            </details>
             <input id="docUrl" placeholder="Document URL" value=${p.extractedDocUrl ?? ''} />
             <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
             <button @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL</button>
