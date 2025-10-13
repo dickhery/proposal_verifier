@@ -71,3 +71,18 @@ ul.links li {
   margin: 0.25rem 0;
   overflow-wrap: anywhere;
 }
+
+/* NEW: Doc list styling */
+ul.doc-list {
+  margin: 0.5rem 0;
+}
+ul.doc-list li {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+ul.doc-list li input[type="file"] {
+  margin-top: 0.5rem;
+}

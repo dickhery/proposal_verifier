@@ -47,9 +47,7 @@ export function extractAllUrls(text) {
     while (/[)\]\}\.,;:'"`]$/.test(s)) s = s.slice(0, -1);
     const left = (s.match(/\(/g) || []).length;
     const right = (s.match(/\)/g) || []).length;
-    while (right > left && s.endsWith(')')) {
-      s = s.slice(0, -1);
-    }
+    while (right > left && s.endsWith(')')) s = s.slice(0, -1);
     return s;
   });
   return [...new Set(sanitized)];
@@ -60,11 +58,10 @@ class App {
   commitStatus = '';
   hashMatch = false;
   hashError = '';
-  docHashMatch = false;
-  docHashError = '';
-  docPreview = '';
+  docResults = []; // NEW: Per-doc verification results [{name, match: bool, error: '', preview: ''}]
   rebuildScript = '';
   isFetching = false;
+  isVerifyingArgs = false; // NEW: Loading for args
   cycleBalance = null;
 
   expectedHash = null;
@@ -79,7 +76,8 @@ class App {
   checklist = {
     fetch: false,
     commit: false,
-    hash: false,
+    argsHash: false,
+    docHash: false,
     expected: false,
     rebuild: false,
   };
@@ -87,13 +85,14 @@ class App {
   constructor() { this.#render(); }
 
   #setFetching(on) { this.isFetching = on; this.#render(); }
-  #normalizeHex(s) { return (s || '').trim().toLowerCase(); }
+  #normalizeHex(s) { return String(s || '').trim().toLowerCase(); } // Fixed typo + type guard
 
   #updateChecklist() {
     this.checklist = {
       fetch: !!this.proposalData,
       commit: this.commitStatus.startsWith('✅'),
-      hash: this.hashMatch || this.docHashMatch,
+      argsHash: this.hashMatch,
+      docHash: this.docResults.every(r => r.match), // All docs match
       expected: !!this.expectedHash,
       rebuild: this.checklist.rebuild || false,
     };
@@ -200,6 +199,7 @@ class App {
         proposalType: base.proposalType,
         extractedUrls,
         commitUrl: unwrap(base.commitUrl),
+        extractedDocs: base.extractedDocs || [], // NEW
       };
 
       this.expectedHash = unwrap(data.expectedHashFromDashboard) || this.proposalData.extractedHash || null;
@@ -234,6 +234,16 @@ class App {
         this.proposalData.proposalType,
         this.proposalData.extractedCommit || ''
       );
+
+      // NEW: Init doc results, skip if hash == null (non-verifiable)
+      this.docResults = this.proposalData.extractedDocs
+        .filter(d => d.hash != null) // Skip invalid
+        .map(d => ({
+          name: d.name,
+          match: false,
+          error: '',
+          preview: '',
+        }));
 
       this.#updateChecklist();
     } catch (err) {
@@ -285,10 +295,13 @@ class App {
     return false;
   }
 
-  async #handleVerifyHash() {
+  async #handleVerifyArgs() {
+    this.isVerifyingArgs = true;
+    this.hashError = '';
+    this.#render();
+
     const args = document.getElementById('args').value || '';
     const inputExpected = document.getElementById('expectedHash').value || this.expectedHash || '';
-    this.hashError = '';
     try {
       const computedHash = await sha256(args);
       this.hashMatch = !!inputExpected && (this.#normalizeHex(computedHash) === this.#normalizeHex(inputExpected));
@@ -297,6 +310,7 @@ class App {
       this.hashMatch = false;
     }
     this.#updateChecklist();
+    this.isVerifyingArgs = false;
     this.#render();
   }
 
@@ -343,25 +357,24 @@ class App {
     this.#render();
   }
 
-  async #handleFileUpload(e) {
+  async #handleFileUpload(e, docIndex) {
     const file = e.target.files[0];
     if (!file) return;
-    this.docHashError = '';
-    this.docPreview = '';
+    const doc = this.proposalData.extractedDocs[docIndex];
+    if (doc.hash == null) return; // Skip invalid docs
+    const expected = doc.hash || this.expectedHash || '';
+    this.docResults[docIndex] = { ...this.docResults[docIndex], error: '', preview: '', match: false };
+    this.#render();
+
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const computedHash = await sha256(bytes);
-      const expected = document.getElementById('expectedDocHash').value || this.expectedHash || '';
-      this.docHashMatch = !!expected && (this.#normalizeHex(computedHash) === this.#normalizeHex(expected));
+      const match = !!expected && (this.#normalizeHex(computedHash) === this.#normalizeHex(expected));
       const ct = file.type || 'binary';
-      if (ct.startsWith('text/')) {
-        this.docPreview = new TextDecoder().decode(bytes).substring(0, 200) + '…';
-      } else {
-        this.docPreview = `${ct} (${bytes.length} bytes) - Local file: ${file.name}`;
-      }
+      const preview = ct.startsWith('text/') ? new TextDecoder().decode(bytes).substring(0, 200) + '…' : `${ct} (${bytes.length} bytes) - Local file: ${file.name}`;
+      this.docResults[docIndex] = { ...this.docResults[docIndex], match, preview };
     } catch (err) {
-      this.docHashError = err.message || String(err);
-      this.docHashMatch = false;
+      this.docResults[docIndex] = { ...this.docResults[docIndex], error: err.message || String(err), match: false };
     }
     this.#updateChecklist();
     this.#render();
@@ -419,6 +432,51 @@ class App {
         <pre>${cmds.map(x => `# ${x.url}\n${x.cmd}`).join('\n\n')}</pre>
         <button @click=${(e) => this.#handleCopy(e, cmds.map(x => x.cmd).join('\n\n'), 'Copy Commands')}>Copy Commands</button>
       </section>
+    `;
+  }
+
+  #renderTypeGuidance() {
+    const type = this.proposalData?.proposalType || '';
+    switch (type) {
+      case 'ParticipantManagement':
+        return html`
+          <details open>
+            <summary><b>Guidance for Node Provider Proposals</b></summary>
+            <p>These proposals verify documents (PDFs). Download the exact file provided by the proposer from the wiki (<a href="https://wiki.internetcomputer.org" target="_blank">IC Wiki</a>), upload below for each doc. Hashes must match summary.</p>
+            <p>Check forum announcement for context.</p>
+          </details>
+        `;
+      case 'IcOsVersionDeployment':
+        return html`
+          <details open>
+            <summary><b>Guidance for IC-OS Elections</b></summary>
+            <p>Download release package (.tar.zst) using curl commands above. Upload to "Verify Document" or hash locally with sha256sum. Compare to expected release_package_sha256_hex.</p>
+          </details>
+        `;
+      // Add more types as needed
+      default: return null;
+    }
+  }
+
+  #renderDocVerification() {
+    const docs = (this.proposalData?.extractedDocs || []).filter(d => d.hash != null); // Filter invalid in frontend too
+    if (!docs.length) return html`<p>No documents extracted. Paste URL or upload manually.</p>`;
+
+    return html`
+      <ul class="doc-list">
+        ${docs.map((d, idx) => {
+          const res = this.docResults[idx] || {match: false, error: '', preview: ''};
+          return html`
+            <li>
+              <b>${d.name}</b> (expected: ${d.hash || 'none'})
+              <input type="file" @change=${(e) => this.#handleFileUpload(e, idx)} />
+              <p><b>Match:</b> ${res.match ? '✅ Yes' : '❌ No'}</p>
+              ${res.error ? html`<p class="error">${res.error}</p>` : ''}
+              <p><b>Preview:</b> ${res.preview}</p>
+            </li>
+          `;
+        })}
+      </ul>
     `;
   }
 
@@ -483,40 +541,37 @@ class App {
 
           ${this.#renderReleaseCommands()}
 
+          ${this.#renderTypeGuidance()}
+
           <section>
-            <h2>Verify Args Hash</h2>
+            <h2>Verify Proposal Args (Text/JSON)</h2>
             <details style="margin-bottom:8px;">
               <summary>What goes here?</summary>
               <p>
-                Paste the exact <b>argument bytes or text</b> of the proposal to compute its SHA-256 and compare.
-                For <b>IC-OS Version Election</b> proposals, the important hash is the <i>release package</i>
-                (see the section above and “Verify Linked Document”). You can skip this box for OS elections.
+                Paste the Candid/JSON payload (from dashboard) to hash. For document-heavy proposals (e.g. Node Provider), use "Verify Documents" below instead.
               </p>
             </details>
-            <textarea id="args" placeholder="Paste proposal args (or bytes as text) to hash"></textarea>
+            <textarea id="args" placeholder="Paste proposal args (or bytes as text) to hash">${this.payloadSnippetFromDashboard || ''}</textarea>
             <input id="expectedHash" placeholder="Expected SHA-256 (hex, 64 chars)" value=${this.expectedHash || ''} />
-            <button @click=${() => this.#handleVerifyHash()}>Verify</button>
+            <button @click=${() => this.#handleVerifyArgs()} class=${this.isVerifyingArgs ? 'loading' : ''} ?disabled=${this.isVerifyingArgs}>
+              ${this.isVerifyingArgs ? 'Verifying...' : 'Verify'}
+            </button>
             <p><b>Match:</b> ${this.hashMatch ? '✅ Yes' : '❌ No'}</p>
             ${this.hashError ? html`<p class="error">${this.hashError}</p>` : ''}
           </section>
 
           <section>
-            <h2>Verify Linked Document / Local File</h2>
+            <h2>Verify Documents / Local Files</h2>
             <details style="margin-bottom:8px;">
               <summary>What goes here?</summary>
               <p>
-                Use this for <b>downloadable artifacts</b> referenced by the proposal (e.g. HostOS/GuestOS
-                <code>update-img.tar.zst</code>, PDFs, or WASMs). Enter a URL (works for CORS-friendly domains) <i>or</i> upload the downloaded file.
-                Large binaries are best downloaded with the provided shell commands; then upload the file here for a GUI check.
+                For PDFs/WASMs/tar.zst: Download from links (e.g. wiki/forum), upload below. For each doc, expected hash from summary.
               </p>
             </details>
-            <input id="docUrl" placeholder="Document URL" value=${p.extractedDocUrl ?? ''} />
+            ${this.#renderDocVerification()}
+            <input id="docUrl" placeholder="Document URL (for text/JSON only)" value=${p.extractedDocUrl ?? ''} />
             <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
-            <button @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL</button>
-            <input type="file" @change=${(e) => this.#handleFileUpload(e)} />
-            <p><b>Match:</b> ${this.docHashMatch ? '✅ Yes' : '❌ No'}</p>
-            ${this.docHashError ? html`<p class="error">${this.docHashError}</p>` : ''}
-            <p><b>Preview:</b> ${this.docPreview}</p>
+            <button @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL (text only)</button>
           </section>
 
           <section>
@@ -538,7 +593,8 @@ class App {
             <ul>
               <li>Fetch: ${this.checklist.fetch ? '✅' : '❌'}</li>
               <li>Commit Check: ${this.checklist.commit ? '✅' : '❌'}</li>
-              <li>Args / Doc Hash: ${this.checklist.hash ? '✅' : '❌'}</li>
+              <li>Args Hash: ${this.checklist.argsHash ? '✅' : '❌'}</li>
+              <li>Doc / File Hash: ${this.checklist.docHash ? '✅' : '❌'}</li>
               <li>Expected Hash from Sources: ${this.checklist.expected ? '✅' : '❌'}</li>
               <li>Rebuild & Compare: (Manual) ${this.checklist.rebuild ? '✅' : '❌'} <button @click=${() => { this.checklist.rebuild = true; this.#render(); }}>Mark Done</button></li>
             </ul>
