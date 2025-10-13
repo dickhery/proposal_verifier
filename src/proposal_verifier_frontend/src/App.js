@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { proposal_verifier_backend } from 'declarations/proposal_verifier_backend';
 import { sha256 } from './utils.js';
+import { FAQView } from './FAQ.js';
 
 // CORS-friendly hosts for browser fetches
 const CORS_ALLOWED_HOSTS = new Set([
@@ -54,6 +55,9 @@ export function extractAllUrls(text) {
 }
 
 class App {
+  // NEW: simple view switch
+  view = 'home'; // 'home' | 'faq'
+
   proposalData = null;
   commitStatus = '';
   hashMatch = false;
@@ -176,7 +180,7 @@ class App {
       const idEl = document.getElementById('proposalId');
       const id = parseInt(idEl.value);
 
-      // Get augmented summary (commit, urls, rough expected hash/snippet)
+      // Get augmented summary (canister first, then browser fallback)
       const aug = await proposal_verifier_backend.getProposalAugmented(BigInt(id));
       if (aug.err) throw new Error(aug.err || 'Unknown error from backend');
 
@@ -480,18 +484,48 @@ class App {
     `;
   }
 
+  #renderTopbar() {
+    return html`
+      <nav class="topbar">
+        <h1 class="grow">IC Proposal Verifier</h1>
+        ${this.view === 'home'
+          ? html`<button class="btn" @click=${() => { this.view = 'faq'; this.#render(); }}>Open FAQ</button>`
+          : html`<button class="btn" @click=${() => { this.view = 'home'; this.#render(); }}>&larr; Back</button>`
+        }
+      </nav>
+    `;
+  }
+
   #render() {
+    // FAQ view
+    if (this.view === 'faq') {
+      const body = FAQView({ onBack: () => { this.view = 'home'; this.#render(); } });
+      return render(body, document.getElementById('root'));
+    }
+
     const p = this.proposalData;
     const loading = this.isFetching;
 
     const body = html`
+      ${this.#renderTopbar()}
+
+      <section class="advisory">
+        <p>
+          <b>Advisory:</b> This tool assists verification by surfacing links, hashes, and
+          commands. <b>Manual checks and reproducible builds</b> remain the most reliable method.
+          See <button class="linklike" @click=${() => { this.view = 'faq'; this.#render(); }}>FAQ</button>.
+        </p>
+      </section>
+
       <main>
-        <h1>IC Proposal Verifier</h1>
         <form @submit=${(e) => this.#handleFetchProposal(e)}>
           <label>Proposal ID:</label>
           <input id="proposalId" type="number" placeholder="e.g. 138908" ?disabled=${loading} />
-          <button type="submit" class=${loading ? 'loading' : ''} ?disabled=${loading}>
+          <button type="submit" class=${loading ? 'loading btn' : 'btn'} ?disabled=${loading}>
             ${loading ? 'Fetching…' : 'Fetch Proposal'}
+          </button>
+          <button type="button" class="btn secondary" @click=${() => { this.view = 'faq'; this.#render(); }}>
+            Open FAQ
           </button>
         </form>
 
@@ -503,7 +537,7 @@ class App {
             <p><b>Title:</b> ${p.title || '(none)'} </p>
             <p><b>Summary (raw):</b></p>
             <pre>${p.summary}</pre>
-            <button @click=${(e) => this.#handleCopy(e, p.summary, 'Copy Summary')}>Copy Summary</button>
+            <button class="btn" @click=${(e) => this.#handleCopy(e, p.summary, 'Copy Summary')}>Copy Summary</button>
 
             <p><b>Extracted Repo:</b> ${p.extractedRepo ?? 'None'}</p>
             <p><b>Extracted Commit:</b>
@@ -553,7 +587,7 @@ class App {
             </details>
             <textarea id="args" placeholder="Paste proposal args (or bytes as text) to hash">${this.payloadSnippetFromDashboard || ''}</textarea>
             <input id="expectedHash" placeholder="Expected SHA-256 (hex, 64 chars)" value=${this.expectedHash || ''} />
-            <button @click=${() => this.#handleVerifyArgs()} class=${this.isVerifyingArgs ? 'loading' : ''} ?disabled=${this.isVerifyingArgs}>
+            <button class="btn" @click=${() => this.#handleVerifyArgs()} class=${this.isVerifyingArgs ? 'loading' : ''} ?disabled=${this.isVerifyingArgs}>
               ${this.isVerifyingArgs ? 'Verifying...' : 'Verify'}
             </button>
             <p><b>Match:</b> ${this.hashMatch ? '✅ Yes' : '❌ No'}</p>
@@ -571,20 +605,20 @@ class App {
             ${this.#renderDocVerification()}
             <input id="docUrl" placeholder="Document URL (for text/JSON only)" value=${p.extractedDocUrl ?? ''} />
             <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
-            <button @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL (text only)</button>
+            <button class="btn" @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL (text only)</button>
           </section>
 
           <section>
             <h2>Payload (from Dashboard/API)</h2>
             <pre>${this.payloadSnippetFromDashboard ?? '(no payload snippet found from ic-api)'}</pre>
-            <button @click=${(e) => this.#handleCopy(e, this.payloadSnippetFromDashboard || '', 'Copy Payload')}>Copy Payload</button>
+            <button class="btn" @click=${(e) => this.#handleCopy(e, this.payloadSnippetFromDashboard || '', 'Copy Payload')}>Copy Payload</button>
           </section>
 
           <section>
             <h2>Rebuild Locally</h2>
             ${p.extractedArtifact ? html`<p><b>Artifact (expected):</b> ${p.extractedArtifact}</p>` : ''}
             <pre>${this.rebuildScript}</pre>
-            <button @click=${(e) => this.#handleCopy(e, this.rebuildScript, 'Copy Script')}>Copy Script</button>
+            <button class="btn" @click=${(e) => this.#handleCopy(e, this.rebuildScript, 'Copy Script')}>Copy Script</button>
             <p>Compare your local <code>sha256sum</code> with the on-chain / dashboard hash.</p>
           </section>
 
@@ -596,7 +630,7 @@ class App {
               <li>Args Hash: ${this.checklist.argsHash ? '✅' : '❌'}</li>
               <li>Doc / File Hash: ${this.checklist.docHash ? '✅' : '❌'}</li>
               <li>Expected Hash from Sources: ${this.checklist.expected ? '✅' : '❌'}</li>
-              <li>Rebuild & Compare: (Manual) ${this.checklist.rebuild ? '✅' : '❌'} <button @click=${() => { this.checklist.rebuild = true; this.#render(); }}>Mark Done</button></li>
+              <li>Rebuild & Compare: (Manual) ${this.checklist.rebuild ? '✅' : '❌'} <button class="btn secondary" @click=${() => { this.checklist.rebuild = true; this.#render(); }}>Mark Done</button></li>
             </ul>
           </section>
         ` : ''}

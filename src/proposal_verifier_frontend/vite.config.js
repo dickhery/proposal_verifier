@@ -15,9 +15,10 @@ const DEV_CSP =
   "https://forum.dfinity.org https://dashboard.internetcomputer.org " +
   "https://download.dfinity.systems https://download.dfinity.network " +
   "data: blob:; " +
-  "img-src 'self' data: https:; " +
+  "img-src 'self' data: https: blob:; " +           // ✅ allow blob: images in dev
   "style-src 'self' 'unsafe-inline'; " +
   "script-src 'self'; " +
+  "script-src-elem 'self' https://cdn.jsdelivr.net; " + // ✅ load your embed script in dev
   "object-src 'none'; " +
   "frame-ancestors 'none'; " +
   "base-uri 'self';";
