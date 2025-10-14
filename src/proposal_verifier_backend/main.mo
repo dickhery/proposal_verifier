@@ -37,14 +37,38 @@ persistent actor verifier {
   type FetchResult = { body : Blob; headers : [HttpHeader] };
 
   // -----------------------------
-  // NNS governance types (subset)
+  // NNS governance types (expanded subset)
   // -----------------------------
   module GovernanceTypes {
     public type ProposalId = { id : Nat64 };
-    public type Proposal = { url : Text; summary : Text; title : ?Text };
+
+    // InstallCode as returned inside Proposal.action (hashes, not full bytes)
+    public type InstallCode = {
+      skip_stopping_before_installing : ?Bool;
+      wasm_module_hash : ?[Nat8];
+      canister_id : ?Principal;
+      arg_hash : ?[Nat8];
+      install_mode : ?Int32;
+    };
+
+    public type Action = {
+      #InstallCode : InstallCode;
+      // NOTE: Other action variants omitted; add as needed.
+    };
+
+    public type Proposal = {
+      url : Text;
+      summary : Text;
+      title : ?Text;
+      action : ?Action;
+    };
+
     public type ProposalInfo = { id : ?ProposalId; proposal : ?Proposal };
   };
 
+  // -----------------------------
+  // Public DTOs
+  // -----------------------------
   type SimplifiedProposalInfo = {
     id : Nat64;
     summary : Text;
@@ -58,7 +82,11 @@ persistent actor verifier {
     proposalType : Text;
     extractedUrls : [Text];
     commitUrl : ?Text;
-    extractedDocs : [{ name : Text; hash : ?Text }]; // NEW: List of docs with hashes
+    extractedDocs : [{ name : Text; hash : ?Text }];
+
+    // Expose on-chain hashes from Proposal.action.InstallCode (if present)
+    proposal_arg_hash : ?Text;
+    proposal_wasm_hash : ?Text;
   };
 
   type AugmentedProposalInfo = {
@@ -67,6 +95,12 @@ persistent actor verifier {
     payloadSnippetFromDashboard : ?Text;
     expectedHashSource : ?Text;
     dashboardUrl : Text;
+
+    // Separate arg_hash from dashboard/api
+    argHashFromDashboard : ?Text;
+
+    // NEW: Potential Candid arg text extracted from dashboard payload snippet
+    extractedArgText : ?Text;
   };
 
   // -----------------------------
@@ -79,6 +113,29 @@ persistent actor verifier {
   let NNS_GOVERNANCE : Principal = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
   let governance = actor (Principal.toText(NNS_GOVERNANCE)) : actor {
     get_proposal_info : (Nat64) -> async ?GovernanceTypes.ProposalInfo;
+  };
+
+  // -----------------------------
+  // Hex helpers
+  // -----------------------------
+  func hexDigit(n : Nat8) : Text {
+    switch (n) {
+      case (0) "0"; case (1) "1"; case (2) "2"; case (3) "3";
+      case (4) "4"; case (5) "5"; case (6) "6"; case (7) "7";
+      case (8) "8"; case (9) "9"; case (10) "a"; case (11) "b";
+      case (12) "c"; case (13) "d"; case (14) "e"; case (15) "f";
+      case (_) "";
+    }
+  };
+
+  func bytesToHex(v : [Nat8]) : Text {
+    var out = "";
+    for (b in v.vals()) {
+      let hi = b / 16;
+      let lo = b % 16;
+      out #= hexDigit(hi) # hexDigit(lo);
+    };
+    out;
   };
 
   // -----------------------------
@@ -142,6 +199,16 @@ persistent actor verifier {
         findFirst64Hex(segment);
       };
     };
+  };
+
+  func extractHexFromTextAroundMarkers(t : Text, markers : [Text], window : Nat) : ?Text {
+    for (m in markers.vals()) {
+      switch (find64HexNearMarker(t, m, window)) {
+        case (?h) { return ?h };
+        case null {};
+      };
+    };
+    null;
   };
 
   // Extract GitHub repo+commit if it appears in the summary
@@ -220,9 +287,12 @@ persistent actor verifier {
     };
   };
 
-  // Extract documents like "* Name: hash" (NEW)
+  // Extract bullet documents lines like "* Name: hash"
   func extractDocuments(summary : Text) : [{ name : Text; hash : ?Text }] {
-    let lines = Array.filter<Text>(Iter.toArray(Text.split(summary, #char '\n')), func(l) { Text.startsWith(l, #text "* ") });
+    let lines = Array.filter<Text>(
+      Iter.toArray(Text.split(summary, #char '\n')),
+      func(l) { Text.startsWith(l, #text "* ") }
+    );
     let docs = Array.init<{ name : Text; hash : ?Text }>(lines.size(), { name = ""; hash = null });
     var idx = 0;
     for (line in lines.vals()) {
@@ -236,7 +306,7 @@ persistent actor verifier {
             let hashOpt = ?after;
             docs[idx] := { name; hash = hashOpt };
             idx += 1;
-          }; // Skip addition if not valid hash
+          };
         };
         case null {};
       };
@@ -246,30 +316,22 @@ persistent actor verifier {
 
   // Only call deterministic/text/json providers here
   func isStableDomain(url : Text) : Bool {
-    Text.contains(url, #text "https://ic-api.internetcomputer.org/") or Text.contains(url, #text "https://api.github.com/") or Text.contains(url, #text "https://raw.githubusercontent.com/");
+    Text.contains(url, #text "https://ic-api.internetcomputer.org/")
+    or Text.contains(url, #text "https://api.github.com/")
+    or Text.contains(url, #text "https://raw.githubusercontent.com/");
   };
 
   // -----------------------------
-  // URL extraction
+  // URL extraction utilities
   // -----------------------------
   func sanitizeUrl(raw : Text) : Text {
-    // Remove trailing punctuation and unbalanced ')'
     var s = raw;
 
-    // Helper: is a trailing punctuation we want to trim?
     func isTrimChar(c : Char) : Bool {
       let n = Char.toNat32(c);
       // ) ] } . , ; : ' " `
-      n == 41 // ')'
-      or n == 93 // ']'
-      or n == 125 // '}'
-      or n == 46 // '.'
-      or n == 44 // ','
-      or n == 59 // ';'
-      or n == 58 // ':'
-      or n == 39 // '\''
-      or n == 34 // '"'
-      or n == 96; // '`'
+      n == 41 or n == 93 or n == 125 or n == 46 or n == 44 or n == 59
+      or n == 58 or n == 39 or n == 34 or n == 96;
     };
 
     // Trim trailing punctuation commonly stuck to URLs
@@ -278,9 +340,7 @@ persistent actor verifier {
       let last = Text.toArray(s)[Text.size(s) - 1];
       if (isTrimChar(last)) {
         s := textSlice(s, 0, Text.size(s) - 1);
-      } else {
-        break trim_loop;
-      };
+      } else { break trim_loop; };
     };
 
     // Remove extra closing ')' if more ')' than '('
@@ -312,7 +372,6 @@ persistent actor verifier {
     };
     while (i < n) {
       if (isHttpStart(i)) {
-        // start at i, advance until whitespace
         var j = i;
         label adv while (j < n) {
           let ch = Text.toArray(t)[j];
@@ -321,23 +380,19 @@ persistent actor verifier {
         };
         let raw = textSlice(t, i, j);
         let clean = sanitizeUrl(raw);
-        // Dedup
         var exists = false;
         for (u in acc.vals()) { if (u == clean) { exists := true } };
         if (not exists and Text.size(clean) > 0) {
           acc := Array.append<Text>(acc, [clean]);
         };
         i := j;
-      } else {
-        i += 1;
-      };
+      } else { i += 1; };
     };
     acc;
   };
 
   func chooseDocUrl(urls : [Text]) : ?Text {
     // Prefer dashboard release links, then GitHub/raw links, else first found
-    var pick : ?Text = null;
     for (u in urls.vals()) {
       if (Text.contains(Text.toLowercase(u), #text "dashboard.internetcomputer.org/release")) return ?u;
     };
@@ -371,10 +426,7 @@ persistent actor verifier {
               let docUrlOpt = chooseDocUrl(urls);
 
               let artifactOpt = extractArtifactPath(summary);
-              let repoFinal = switch (repoFromUrlOpt) {
-                case (?r) ?r;
-                case null null;
-              };
+              let repoFinal = switch (repoFromUrlOpt) { case (?r) ?r; case null null };
               let commitFinal = switch (commitFromUrlOpt, commit40Opt) {
                 case (?c, _) ?c;
                 case (null, ?c40) ?c40;
@@ -387,11 +439,20 @@ persistent actor verifier {
                 case _ null;
               };
 
-              // Enhanced classification by simple keyword scan
+              // Simple type classification
               let lowerSummary = Text.toLowercase(summary);
-              let proposalType = if (Text.contains(lowerSummary, #text "ic os") or Text.contains(lowerSummary, #text "replica") or Text.contains(lowerSummary, #text "guestos")) "IcOsVersionDeployment" else if (Text.contains(lowerSummary, #text "wasm") or Text.contains(lowerSummary, #text "canister")) "ProtocolCanisterManagement" else if (Text.contains(lowerSummary, #text "motion")) "Governance" else if (Text.contains(lowerSummary, #text "node provider")) "ParticipantManagement" else if (Text.contains(lowerSummary, #text "subnet")) "SubnetManagement" else if (Text.contains(lowerSummary, #text "sns")) "ServiceNervousSystemManagement" else if (Text.contains(lowerSummary, #text "application canister")) "ApplicationCanisterManagement" else if (Text.contains(lowerSummary, #text "economics")) "NetworkEconomics" else "Unknown";
+              let proposalType =
+                if (Text.contains(lowerSummary, #text "ic os") or Text.contains(lowerSummary, #text "replica") or Text.contains(lowerSummary, #text "guestos")) "IcOsVersionDeployment"
+                else if (Text.contains(lowerSummary, #text "wasm") or Text.contains(lowerSummary, #text "canister")) "ProtocolCanisterManagement"
+                else if (Text.contains(lowerSummary, #text "motion")) "Governance"
+                else if (Text.contains(lowerSummary, #text "node provider")) "ParticipantManagement"
+                else if (Text.contains(lowerSummary, #text "subnet")) "SubnetManagement"
+                else if (Text.contains(lowerSummary, #text "sns")) "ServiceNervousSystemManagement"
+                else if (Text.contains(lowerSummary, #text "application canister")) "ApplicationCanisterManagement"
+                else if (Text.contains(lowerSummary, #text "economics")) "NetworkEconomics"
+                else "Unknown";
 
-              // NEW: Extract documents
+              // Extract bullet docs
               let extractedDocs = extractDocuments(summary);
 
               // For ParticipantManagement, default wiki if not present
@@ -400,6 +461,17 @@ persistent actor verifier {
                   if (docUrlOpt == null) ?"https://wiki.internetcomputer.org/wiki/" else docUrlOpt;
                 };
                 case _ docUrlOpt;
+              };
+
+              // Surface on-chain hashes if action is InstallCode (hash vectors -> hex)
+              var proposal_arg_hash : ?Text = null;
+              var proposal_wasm_hash : ?Text = null;
+              switch (proposal.action) {
+                case (? #InstallCode(ic)) {
+                  switch (ic.arg_hash) { case (?v) { proposal_arg_hash := ?bytesToHex(v) }; case null {} };
+                  switch (ic.wasm_module_hash) { case (?v) { proposal_wasm_hash := ?bytesToHex(v) }; case null {} };
+                };
+                case _ {};
               };
 
               #ok({
@@ -416,6 +488,8 @@ persistent actor verifier {
                 extractedUrls = urls;
                 commitUrl = commitUrlOpt;
                 extractedDocs;
+                proposal_arg_hash;
+                proposal_wasm_hash;
               });
             };
             case _ { #err("Proposal missing summary data") };
@@ -452,7 +526,7 @@ persistent actor verifier {
           method_name = "githubTransform";
         };
         context = Blob.fromArray([]);
-      }; // NEW: Specific transform for GitHub
+      };
     };
     Cycles.add<system>(100_000_000_000);
     try {
@@ -566,21 +640,23 @@ persistent actor verifier {
     } catch (e) { null };
   };
 
+  // Prefer WASM hash, fall back to other common markers
   func extractExpectedHashFromJsonText(jsonText : Text) : ?Text {
-    switch (find64HexNearMarker(jsonText, "\"expected_hash\"", 1200)) {
-      case (?h) ?h;
-      case null {
-        switch (find64HexNearMarker(jsonText, "\"wasm_module_hash\"", 1200)) {
-          case (?h2) ?h2;
-          case null {
-            switch (find64HexNearMarker(jsonText, "\"sha256\"", 1200)) {
-              case (?h3) ?h3;
-              case null find64HexNearMarker(jsonText, "\"hash\"", 1200);
-            };
-          };
-        };
-      };
-    };
+    extractHexFromTextAroundMarkers(
+      jsonText,
+      // order matters
+      ["wasm_module_hash", "\"wasm_module_hash\"", "expected_hash", "\"expected_hash\"", "release_package_sha256_hex", "\"release_package_sha256_hex\"", "sha256", "\"sha256\"", "hash", "\"hash\""],
+      1200
+    );
+  };
+
+  // Separate arg_hash from dashboard/api
+  func extractArgHashFromJsonText(jsonText : Text) : ?Text {
+    extractHexFromTextAroundMarkers(
+      jsonText,
+      ["arg_hash", "\"arg_hash\""],
+      1200
+    );
   };
 
   func extractPayloadSnippetFromJson(jsonText : Text) : ?Text {
@@ -593,6 +669,87 @@ persistent actor verifier {
     };
   };
 
+  // -------- NEW: extract likely Candid arg text from a payload snippet -------
+  // Heuristics:
+  // 1) Look for Candid-like blocks starting with "record {" or "variant {" etc.
+  // 2) Return the balanced-brace block as text (best-effort).
+  func findBalancedFromBrace(t : Text, bracePos : Nat) : ?Text {
+    let arr = Text.toArray(t);
+    let n = Array.size(arr);
+    if (bracePos >= n or arr[bracePos] != '{') return null;
+    var depth : Nat = 0;
+    var i = bracePos;
+    label scan while (i < n) {
+      let ch = arr[i];
+      if (ch == '{') { depth += 1 };
+      if (ch == '}') {
+        if (depth == 0) { return null } else { depth -= 1 };
+        if (depth == 0) {
+          // include the closing brace
+          return ?textSlice(t, bracePos, i + 1);
+        };
+      };
+      i += 1;
+    };
+    null;
+  };
+
+  func findBraceAfter(t : Text, from : Nat) : ?Nat {
+    let n = Text.size(t);
+    var i = from;
+    let arr = Text.toArray(t);
+    while (i < n) {
+      if (arr[i] == '{') return ?i;
+      i += 1;
+    };
+    null;
+  };
+
+  func extractArgText(snippet : Text) : ?Text {
+    // Search for common Candid constructs
+    let lowers = Text.toLowercase(snippet);
+    let candidates = ["record {", "variant {", "vec {", "opt {"];
+
+    // Try to prefer things that come after an "arg" marker if present
+    var startHint : Nat = 0;
+    let argMarkers = ["arg =", "arg=", "arg :", "arg:", "\"arg\""];
+    label findArg for (m in argMarkers.vals()) {
+      switch (indexOf(lowers, m)) {
+        case (?p) { startHint := p + Text.size(m); break findArg };
+        case null {};
+      };
+    };
+
+    // First, search after startHint; then fall back to whole snippet
+    func searchFrom(base : Nat) : ?Text {
+      for (c in candidates.vals()) {
+        switch (indexOf(textSlice(lowers, base, Text.size(lowers)), c)) {
+          case (?rel) {
+            let abs = base + rel;
+            // find the '{' after the keyword
+            let braceSearchFrom = abs;
+            switch (findBraceAfter(lowers, braceSearchFrom)) {
+              case (?bpos) {
+                switch (findBalancedFromBrace(snippet, bpos)) {
+                  case (?block) { return ?block };
+                  case null {};
+                };
+              };
+              case null {};
+            };
+          };
+          case null {};
+        };
+      };
+      null;
+    };
+
+    switch (searchFrom(startHint)) {
+      case (?t) ?t;
+      case null searchFrom(0);
+    };
+  };
+
   // Augmented getter that merges base summary info with ic-api JSON
   public shared func getProposalAugmented(id : Nat64) : async Result.Result<AugmentedProposalInfo, Text> {
     switch (await getProposal(id)) {
@@ -601,14 +758,21 @@ persistent actor verifier {
         let dashboardUrl = "https://dashboard.internetcomputer.org/proposal/" # Nat64.toText(id);
 
         var expected : ?Text = null;
+        var argHash : ?Text = null;
         var snippet : ?Text = null;
         var source : ?Text = null;
+        var extractedArg : ?Text = null;
 
         let jsonOpt = await fetchIcApiProposalJsonText(id);
         switch (jsonOpt) {
           case (?json) {
             expected := extractExpectedHashFromJsonText(json);
+            argHash := extractArgHashFromJsonText(json);
             snippet := extractPayloadSnippetFromJson(json);
+            switch (snippet) {
+              case (?s) { extractedArg := extractArgText(s) };
+              case null {};
+            };
             if (expected != null) { source := ?"ic-api" };
           };
           case null {};
@@ -620,22 +784,27 @@ persistent actor verifier {
           payloadSnippetFromDashboard = snippet;
           expectedHashSource = source;
           dashboardUrl;
+          argHashFromDashboard = argHash;
+          extractedArgText = extractedArg;
         });
       };
     };
   };
 
-  // Transform: strip ALL headers to avoid consensus diffs
+  // -----------------------------
+  // Transforms
+  // -----------------------------
   public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
     { status = args.response.status; headers = []; body = args.response.body };
   };
 
-  // NEW: GitHub-specific transform (strip dates, etags if needed)
   public query func githubTransform(args : TransformArgs) : async HttpResponsePayload {
-    { status = args.response.status; headers = []; body = args.response.body }; // For now, same as general; extend if consensus fails
+    { status = args.response.status; headers = []; body = args.response.body };
   };
 
-  // NEW: Debug query for cycle balance (call from frontend to monitor)
+  // -----------------------------
+  // Debug
+  // -----------------------------
   public query func getCycleBalance() : async Nat {
     Cycles.balance();
   };

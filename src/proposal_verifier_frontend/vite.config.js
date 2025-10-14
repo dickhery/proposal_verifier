@@ -14,11 +14,12 @@ const DEV_CSP =
   "https://api.github.com https://raw.githubusercontent.com " +
   "https://forum.dfinity.org https://dashboard.internetcomputer.org " +
   "https://download.dfinity.systems https://download.dfinity.network " +
+  "https://cdn.jsdelivr.net; " +  // ✅ Add for source maps
   "data: blob:; " +
-  "img-src 'self' data: https: blob:; " +           // ✅ allow blob: images in dev
+  "img-src 'self' data: https: blob:; " +
   "style-src 'self' 'unsafe-inline'; " +
-  "script-src 'self'; " +
-  "script-src-elem 'self' https://cdn.jsdelivr.net; " + // ✅ load your embed script in dev
+  "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; " +  // ✅ Add for asm.js/WASM
+  "script-src-elem 'self' https://cdn.jsdelivr.net; " +
   "object-src 'none'; " +
   "frame-ancestors 'none'; " +
   "base-uri 'self';";

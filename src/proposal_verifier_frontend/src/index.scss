@@ -77,3 +77,27 @@ details.faq { margin: 8px 0; }
 details.faq summary { cursor: pointer; }
 details.faq .qa { margin-top: 6px; }
 details.faq .helper { color: #444; background: #f7f7f7; padding: 8px; border-radius: 4px; }
+
+.qa { margin-top: 6px; }
+.qa strong { display: block; }
+
+.manual-pre { background: #eee; padding: 10px; overflow: auto; }
+
+.radio-group {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.radio-group label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cmd-pre {
+  background: #eee;
+  padding: 8px;
+  margin: 8px 0;
+  border-radius: 4px;
+}
