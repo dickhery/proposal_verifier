@@ -188,7 +188,13 @@ class App {
       const data = aug.ok;
       const base = data.base;
 
-      const extractedUrls = base.extractedUrls || [];
+      const extractedUrls = Array.isArray(base.extractedUrls) ? base.extractedUrls : [];
+
+      const docsRaw = Array.isArray(base.extractedDocs) ? base.extractedDocs : [];
+      const docs = docsRaw.map((doc) => ({
+        name: doc?.name ?? '',
+        hash: unwrap(doc?.hash),
+      }));
 
       this.proposalData = {
         id: Number(base.id),
@@ -203,7 +209,7 @@ class App {
         proposalType: base.proposalType,
         extractedUrls,
         commitUrl: unwrap(base.commitUrl),
-        extractedDocs: base.extractedDocs || [], // NEW
+        extractedDocs: docs, // NEW
       };
 
       this.expectedHash = unwrap(data.expectedHashFromDashboard) || this.proposalData.extractedHash || null;
@@ -241,7 +247,7 @@ class App {
 
       // NEW: Init doc results, skip if hash == null (non-verifiable)
       this.docResults = this.proposalData.extractedDocs
-        .filter(d => d.hash != null) // Skip invalid
+        .filter(d => d.hash != null && d.hash !== '') // Skip invalid
         .map(d => ({
           name: d.name,
           match: false,
