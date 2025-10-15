@@ -99,8 +99,12 @@ persistent actor verifier {
     // Separate arg_hash from dashboard/api
     argHashFromDashboard : ?Text;
 
-    // NEW: Potential Candid arg text extracted from dashboard payload snippet
+    // Potential Candid arg text extracted from dashboard payload snippet
     extractedArgText : ?Text;
+
+    // NEW: Type-specific text blocks for the frontend
+    verificationSteps : ?Text;
+    requiredTools : ?Text;
   };
 
   // -----------------------------
@@ -403,6 +407,114 @@ persistent actor verifier {
   };
 
   // -----------------------------
+  // NEW: Type-specific text for UI
+  // -----------------------------
+  func getVerificationSteps(proposalType : Text) : ?Text {
+    switch (proposalType) {
+      case ("ProtocolCanisterManagement") {
+        ?(
+        "1. Identify action (InstallCode / UpdateCanisterSettings / Stop/Start).\n" #
+        "2. Extract repo & commit from the summary; confirm commit exists.\n" #
+        "3. Rebuild canister(s):\n" #
+        "   git clone https://github.com/dfinity/ic && cd ic && git checkout COMMIT && ./ci/container/build-ic.sh -c\n" #
+        "4. Compute hashes: sha256sum ./artifacts/canisters/*.wasm{,.gz}\n" #
+        "5. Compare to on-chain wasm hash and dashboard expected hash (if any).\n" #
+        "6. Args: encode with didc, hash bytes, and compare to arg_hash.\n" #
+        "7. Review forum/context links as needed.");
+      };
+      case ("ServiceNervousSystemManagement") {
+        ?(
+        "1. Identify SNS action (e.g., AddSnsWasm / Upgrade).\n" #
+        "2. Locate SNS repo/commit; rebuild per repo README.\n" #
+        "3. Compute SHA-256 of produced WASM and compare to proposal.\n" #
+        "4. For parameter changes, review payload fields.");
+      };
+      case ("ApplicationCanisterManagement") {
+        ?(
+        "1. Identify target app canister (e.g., ledger, II, ckBTC).\n" #
+        "2. Use the indicated repo (IC or app-specific) and commit.\n" #
+        "3. Build the module and sha256sum the output.\n" #
+        "4. Compare to expected/wasm hash; verify args if present.");
+      };
+      case ("IcOsVersionElection") {
+        ?(
+        "1. Confirm GuestOS/HostOS versions and associated commit.\n" #
+        "2. Use IC repro-check to reproduce artifacts.\n" #
+        "3. Compare computed hashes to those referenced by the proposal.");
+      };
+      case ("IcOsVersionDeployment") {
+        ?(
+        "1. Confirm IC-OS release identifiers (GuestOS/HostOS).\n" #
+        "2. Download the release package from the dashboard release link.\n" #
+        "3. sha256sum the package; compare to release_package_sha256_hex.\n" #
+        "4. Cross-check targeted subnets/nodes if applicable.");
+      };
+      case ("Governance") {
+        ?(
+        "1. Motion / governance-text only: no binaries to rebuild.\n" #
+        "2. Read the summary and linked discussion carefully.\n" #
+        "3. Validate intent and scope match the title and context.");
+      };
+      case ("SnsAndCommunityFund") {
+        ?(
+        "1. Review CreateServiceNervousSystem payload parameters.\n" #
+        "2. Verify initial distribution, swap params, Neurons’ Fund usage.\n" #
+        "3. Check referenced docs and hashes if provided.");
+      };
+      case ("NetworkEconomics") {
+        ?(
+        "1. Inspect parameter/table changes (e.g., NodeRewardsTable).\n" #
+        "2. Compare against prior values and rationale.\n" #
+        "3. No binaries: manual policy review.");
+      };
+      case ("SubnetManagement") {
+        ?(
+        "1. Identify action (CreateSubnet / AddNode / UpdateConfig, etc.).\n" #
+        "2. Verify principal IDs, node/provider IDs, and config diffs.\n" #
+        "3. For firewall/registry changes, review fields and effects.");
+      };
+      case ("ParticipantManagement") {
+        ?(
+        "1. Identify node provider / data center update.\n" #
+        "2. Download referenced PDFs from wiki/dashboard.\n" #
+        "3. sha256sum the PDFs; compare to hashes in the proposal.\n" #
+        "4. Sanity-check provider and forum introduction.");
+      };
+      case ("NodeAdmin") {
+        ?(
+        "1. Confirm node operator config/allowance changes.\n" #
+        "2. Verify IDs and expected subnet allocations.");
+      };
+      case ("KYC") {
+        ?(
+        "1. ApproveGenesisKYC: verify principals match intended list.\n" #
+        "2. No hashes: manual identity/eligibility review.");
+      };
+      case ("NeuronManagement") {
+        ?(
+        "1. ManageNeuron: verify target neuron and permissions.\n" #
+        "2. Manual check of intent and timing.");
+      };
+      case _ { null };
+    }
+  };
+
+  func getRequiredTools(proposalType : Text) : ?Text {
+    switch (proposalType) {
+      case ("ProtocolCanisterManagement") {
+        ?"git, Docker (for builds), sha256sum, didc (for Candid args)";
+      };
+      case ("IcOsVersionDeployment") {
+        ?"curl, git, sha256sum, Docker (for repro-check)";
+      };
+      case ("ParticipantManagement") {
+        ?"Browser (wiki/forum), sha256sum";
+      };
+      case _ { null };
+    }
+  };
+
+  // -----------------------------
   // Core getters
   // -----------------------------
   public shared func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
@@ -669,10 +781,7 @@ persistent actor verifier {
     };
   };
 
-  // -------- NEW: extract likely Candid arg text from a payload snippet -------
-  // Heuristics:
-  // 1) Look for Candid-like blocks starting with "record {" or "variant {" etc.
-  // 2) Return the balanced-brace block as text (best-effort).
+  // -------- Extract likely Candid arg text from a payload snippet -------
   func findBalancedFromBrace(t : Text, bracePos : Nat) : ?Text {
     let arr = Text.toArray(t);
     let n = Array.size(arr);
@@ -685,7 +794,6 @@ persistent actor verifier {
       if (ch == '}') {
         if (depth == 0) { return null } else { depth -= 1 };
         if (depth == 0) {
-          // include the closing brace
           return ?textSlice(t, bracePos, i + 1);
         };
       };
@@ -706,11 +814,10 @@ persistent actor verifier {
   };
 
   func extractArgText(snippet : Text) : ?Text {
-    // Search for common Candid constructs
     let lowers = Text.toLowercase(snippet);
     let candidates = ["record {", "variant {", "vec {", "opt {"];
 
-    // Try to prefer things that come after an "arg" marker if present
+    // Prefer after an "arg" marker, if present
     var startHint : Nat = 0;
     let argMarkers = ["arg =", "arg=", "arg :", "arg:", "\"arg\""];
     label findArg for (m in argMarkers.vals()) {
@@ -720,15 +827,12 @@ persistent actor verifier {
       };
     };
 
-    // First, search after startHint; then fall back to whole snippet
     func searchFrom(base : Nat) : ?Text {
       for (c in candidates.vals()) {
         switch (indexOf(textSlice(lowers, base, Text.size(lowers)), c)) {
           case (?rel) {
             let abs = base + rel;
-            // find the '{' after the keyword
-            let braceSearchFrom = abs;
-            switch (findBraceAfter(lowers, braceSearchFrom)) {
+            switch (findBraceAfter(lowers, abs)) {
               case (?bpos) {
                 switch (findBalancedFromBrace(snippet, bpos)) {
                   case (?block) { return ?block };
@@ -778,6 +882,10 @@ persistent actor verifier {
           case null {};
         };
 
+        // NEW: compute type-specific helper text
+        let steps = getVerificationSteps(base.proposalType);
+        let tools = getRequiredTools(base.proposalType);
+
         #ok({
           base;
           expectedHashFromDashboard = expected;
@@ -786,6 +894,8 @@ persistent actor verifier {
           dashboardUrl;
           argHashFromDashboard = argHash;
           extractedArgText = extractedArg;
+          verificationSteps = steps;
+          requiredTools = tools;
         });
       };
     };
@@ -809,4 +919,3 @@ persistent actor verifier {
     Cycles.balance();
   };
 };
-

@@ -101,3 +101,16 @@ details.faq .helper { color: #444; background: #f7f7f7; padding: 8px; border-rad
   margin: 8px 0;
   border-radius: 4px;
 }
+
+/* NEW: Steps list */
+ol.steps-list {
+  padding-left: 20px;
+}
+ol.steps-list li {
+  margin-bottom: 8px;
+  list-style-type: decimal;
+}
+
+/* NEW: Type guidance details */
+details.type-guidance { margin: 12px 0; border: 1px solid #ddd; padding: 8px; border-radius: 4px; }
+details.type-guidance summary { font-weight: bold; }
