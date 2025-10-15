@@ -1,8 +1,9 @@
 // src/proposal_verifier_frontend/src/App.js
 import { html, render } from 'lit-html';
 import { proposal_verifier_backend } from 'declarations/proposal_verifier_backend';
-import { sha256, hexToBytes, normalizeHex, bytesToHex, equalBytes } from './utils.js';
+import { sha256, hexToBytes, normalizeHex, bytesToHex, equalBytes, tryDecodeDoubleHex, looksLikeHexString } from './utils.js';
 import { FAQView } from './FAQ.js';
+import { IDL } from '@dfinity/candid';
 
 // CORS-friendly hosts for browser fetches
 const CORS_ALLOWED_HOSTS = new Set([
@@ -107,15 +108,23 @@ function extractArgVerificationCommand(summary) {
   const titleIdx = summary.toLowerCase().indexOf("argument verification");
   if (titleIdx < 0) return null;
   const after = summary.slice(titleIdx);
-  // simple code fence or inline block capture
   const fence = after.match(/```[\s\S]*?```/);
   if (fence) {
     const code = fence[0].replace(/```/g, "").trim();
-    if (/didc\s+encode/i.test(code) && /sha256sum/i.test(code)) return code;
+    if (/didc\s+encode/i.test(code) && /(sha256sum|shasum)/i.test(code)) return code;
   }
-  // inline single-line fallback
   const line = after.split('\n').find(l => /didc\s+encode/i.test(l));
   return line ? line.trim() : null;
+}
+
+// Simple Candid encoders for common cases
+function encodeNullHex() {
+  const bytes = IDL.encode([IDL.Null], [null]);
+  return bytesToHex(bytes);
+}
+function encodeUnitHex() {
+  const bytes = IDL.encode([], []); // ()
+  return bytesToHex(bytes);
 }
 
 class App {
@@ -312,7 +321,7 @@ class App {
       if (this.extractedArgText && CANDID_PATTERN.test(this.extractedArgText)) {
         this.argInputCurrent = this.extractedArgText;
         this.argInputType = 'candid';
-        this.argInputHint = 'Detected Candid-like text. Encode with didc, then paste the hex under "Hex Bytes".';
+        this.argInputHint = 'Detected Candid-like text. Encode with didc (or use the quick buttons), then paste the hex under "Hex Bytes".';
       } else if (this.payloadSnippetFromDashboard && CANDID_PATTERN.test(this.payloadSnippetFromDashboard)) {
         this.argInputCurrent = this.payloadSnippetFromDashboard.trim();
         this.argInputType = 'candid';
@@ -482,7 +491,7 @@ class App {
       const fname = `update-img-${idx + 1}.tar.zst`;
       return {
         url: u,
-        cmd: `curl -fsSL "${u}" -o ${fname}\nsha256sum ${fname}  # expect ${expected}`
+        cmd: `curl -fsSL "${u}" -o ${fname}\nsha256sum ${fname}  # Linux (expect ${expected})\nshasum -a 256 ${fname}  # macOS (expect ${expected})`
       };
     });
     return html`
@@ -512,7 +521,7 @@ class App {
         return html`
           <details class="type-guidance">
             <summary><b>Guidance for IC-OS Elections</b></summary>
-            <p>Download release package (.tar.zst) using curl commands above. Hash locally with <code>sha256sum</code>. Compare to <code>release_package_sha256_hex</code>.</p>
+            <p>Download release package (.tar.zst) using curl commands above. Hash locally with <code>sha256sum</code> (Linux) or <code>shasum -a 256</code> (macOS). Compare to <code>release_package_sha256_hex</code>.</p>
           </details>
         `;
       default: return null;
@@ -524,7 +533,7 @@ class App {
   #handleArgTypeChange(val) {
     this.argInputType = val;
     if (val === 'candid') {
-      this.hashError = 'Candid text must be encoded to bytes (e.g., with `didc encode`) before hashing.';
+      this.hashError = 'Candid text must be encoded to bytes (e.g., with `didc encode`) before hashing. Use the quick buttons below or the command builder.';
     } else {
       this.hashError = '';
     }
@@ -537,22 +546,26 @@ class App {
 
     // Helpful hints and mistake detection
     if (/^blob\s*"/i.test(v)) {
-      this.argInputHint = 'This looks like a Candid blob literal (likely the onchain hash). You must hash the *argument bytes*, not the hash itself.';
+      this.argInputHint = 'This looks like a Candid blob literal (likely the on-chain hash). You must hash the *argument bytes*, not the hash itself.';
     } else if (this.argInputType !== 'candid' && CANDID_PATTERN.test(v)) {
-      this.argInputHint = 'Looks like Candid. Choose "Candid Text" and encode with didc first.';
+      this.argInputHint = 'Looks like Candid. Choose "Candid Text" and encode with didc first (or use the quick buttons).';
     } else if (/^vec\s*\{[\s\S]*\}$/i.test(v)) {
       this.argInputHint = 'Looks like a Candid vec nat8. Choose “vec nat8 list”.';
-    } else if (/^(0x)?[0-9a-fA-F]+[%]?$/.test(v)) {
-      this.argInputHint = 'Looks like hex. Choose "Hex Bytes".';
+    } else if (looksLikeHexString(v)) {
+      this.argInputHint = 'Looks like hex. If this is the *hash* from the proposal, do not paste it here. Paste the *argument bytes* (hex from `didc encode`) instead.';
     } else {
       this.argInputHint = '';
     }
   }
 
   #buildDidcCommand() {
+    // This builder is for producing HEX BYTES to paste, not hashing directly.
+    // `didc encode` already outputs hex text, so no `xxd -p` here.
     const input = (this.argInputCurrent || '').trim();
-    if (!input) return `didc encode '()' | xxd -p -c0 | tr -d '\\n'`;
-    return `didc encode '(${input})' | xxd -p -c0 | tr -d '\\n'`;
+    if (!input) return `didc encode '()' | tr -d '\\n'`;
+    // If the user typed full tuple already "(...)", avoid double parens:
+    const candidExpr = /^\s*\(.*\)\s*$/.test(input) ? input : `(${input})`;
+    return `didc encode '${candidExpr}' | tr -d '\\n'`;
   }
 
   #renderArgShortcuts() {
@@ -561,32 +574,62 @@ class App {
 
     const hasRecommended = !!this.recommendedArgCmd;
 
-    const setNullTemplate = () => {
-      this.argInputType = 'candid';
-      this.argInputCurrent = 'null';
-      this.argInputHint = 'Encode (null) with didc, then paste the hex under "Hex Bytes".';
-      this.#render();
+    const fillNull = () => {
+      try {
+        const hex = encodeNullHex();
+        this.argInputType = 'hex';
+        this.argInputCurrent = hex;
+        this.argInputHint = 'Auto-encoded `(null)` with @dfinity/candid. These are the *argument bytes* in hex.';
+        this.#render();
+      } catch (e) {
+        alert('Encoding failed: ' + (e?.message || String(e)));
+      }
     };
 
-    const setUnitTemplate = () => {
-      this.argInputType = 'candid';
-      this.argInputCurrent = '()';
-      this.argInputHint = 'Encode () with didc, then paste the hex under "Hex Bytes".';
-      this.#render();
+    const fillUnit = () => {
+      try {
+        const hex = encodeUnitHex();
+        this.argInputType = 'hex';
+        this.argInputCurrent = hex;
+        this.argInputHint = 'Auto-encoded `()` with @dfinity/candid. These are the *argument bytes* in hex.';
+        this.#render();
+      } catch (e) {
+        alert('Encoding failed: ' + (e?.message || String(e)));
+      }
     };
+
+    // Hash-verify command (platform aware)
+    const candidExpr = (() => {
+      const v = (this.argInputCurrent || '').trim();
+      if (!v) return '(null)'; // default helpful example
+      return /^\s*\(.*\)\s*$/.test(v) ? v : `(${v})`;
+    })();
+    const macVerify = `didc encode '${candidExpr}' | xxd -r -p | shasum -a 256 | awk '{print $1}'`;
+    const linuxVerify = `didc encode '${candidExpr}' | xxd -r -p | sha256sum | awk '{print $1}'`;
 
     return html`
       <details>
         <summary><b>Quick helpers</b></summary>
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin:8px 0;">
-          <button class="btn secondary" @click=${setNullTemplate}>Arg is <code>(null)</code></button>
-          <button class="btn secondary" @click=${setUnitTemplate}>Arg is <code>()</code></button>
+          <button class="btn secondary" @click=${fillNull}>Arg is <code>(null)</code> (auto-encode)</button>
+          <button class="btn secondary" @click=${fillUnit}>Arg is <code>()</code> (auto-encode)</button>
         </div>
+
         ${hasRecommended ? html`
-          <p><b>From summary (recommended):</b></p>
+          <p><b>From summary (recommended hash-verify):</b></p>
           <pre class="cmd-pre">${this.recommendedArgCmd}</pre>
           <button class="btn secondary" @click=${(e) => this.#handleCopy(e, this.recommendedArgCmd, 'Copy Command')}>Copy Command</button>
-        ` : html`<p>No “Argument Verification” snippet found in this summary.</p>`}
+        ` : ''}
+
+        <p><b>Hash-verify yourself:</b></p>
+        <pre class="cmd-pre"># macOS
+${macVerify}
+
+# Linux
+${linuxVerify}</pre>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn secondary" @click=${(e) => this.#handleCopy(e, macVerify + '\n\n' + linuxVerify, 'Copy Commands')}>Copy Both</button>
+        </div>
       </details>
     `;
   }
@@ -616,8 +659,11 @@ class App {
 
       switch (this.argInputType) {
         case 'hex': {
-          if (!argsRaw) throw new Error('Paste hex bytes (from didc output or another tool).');
-          bytes = hexToBytes(argsRaw);
+          if (!argsRaw) throw new Error('Paste hex bytes (from `didc encode` or the auto-encode buttons).');
+          // Try to auto-fix if double-hex
+          const maybe = tryDecodeDoubleHex(argsRaw);
+          bytes = maybe || hexToBytes(argsRaw);
+          if (maybe) this.argInputHint = 'Detected hex-of-hex. Auto-corrected to raw bytes.';
           break;
         }
         case 'vec': {
@@ -632,12 +678,11 @@ class App {
         }
         case 'text': {
           if (!argsRaw) throw new Error('Paste text to hash, or choose a more specific mode.');
-          // Raw UTF-8 bytes of the pasted text (rarely correct for args)
           bytes = new TextEncoder().encode(argsRaw);
           break;
         }
         case 'candid': {
-          this.hashError = 'Candid text must be encoded first (see didc command below), then paste the resulting hex under "Hex Bytes".';
+          this.hashError = 'Candid text must be encoded first (see builder/auto-encode), then paste the hex under "Hex Bytes".';
           this.hashMatch = false;
           this.isVerifyingArgs = false;
           this.#updateChecklist();
@@ -645,9 +690,10 @@ class App {
           return;
         }
         default: {
-          // Auto-detect fallback
-          if (/^(0x)?[0-9a-fA-F]+[%]?$/.test(argsRaw)) {
-            bytes = hexToBytes(argsRaw);
+          if (looksLikeHexString(argsRaw)) {
+            const maybe = tryDecodeDoubleHex(argsRaw);
+            bytes = maybe || hexToBytes(argsRaw);
+            if (maybe) this.argInputHint = 'Detected hex-of-hex. Auto-corrected to raw bytes.';
           } else if (/^vec\s*\{[\s\S]*\}$/i.test(argsRaw)) {
             bytes = parseVecNat8Literal(argsRaw);
           } else if (/^blob\s*"/i.test(argsRaw)) {
@@ -664,7 +710,7 @@ class App {
       // Helpful warning: if user pasted the hash bytes themselves, warn.
       const expectedBytes = hexToBytes(inputExpected);
       if (bytes.length === 32 && equalBytes(bytes, expectedBytes)) {
-        this.hashError = 'You pasted the on-chain hash itself (32 bytes). Paste the *argument bytes* (e.g. output of `didc encode`), not the hash.';
+        this.hashError = 'You pasted the on-chain hash itself (32 bytes). Paste the *argument bytes* (e.g., hex from `didc encode`), not the hash.';
         this.hashMatch = false;
         this.isVerifyingArgs = false;
         this.#updateChecklist();
@@ -674,6 +720,9 @@ class App {
 
       const computedHash = await sha256(bytes);
       this.hashMatch = (this.#normalizeHex(computedHash) === this.#normalizeHex(inputExpected));
+      if (!this.hashMatch) {
+        this.hashError = 'No match. Most common causes:\n• You hashed text instead of bytes.\n• You pasted hex-of-hex. Use the auto-fix or re-run without `| xxd -p`.\n• You pasted the hash itself instead of the arg bytes.';
+      }
     } catch (err) {
       this.hashError = err.message || String(err);
       this.hashMatch = false;
@@ -694,18 +743,20 @@ class App {
         <details>
           <summary>How to choose an input</summary>
           <ol>
-            <li><b>Hex Bytes:</b> Paste the bytes as hex (from <code>didc encode</code> + <code>xxd -p</code>). We hash bytes.</li>
+            <li><b>Hex Bytes:</b> Paste the bytes as hex (<i>direct output</i> of <code>didc encode</code> or use the auto-encode buttons). We hash <b>bytes</b>.</li>
             <li><b>vec nat8 list:</b> Paste a Candid list like <code>vec {1; 2; 0xFF}</code>. We parse to bytes and hash.</li>
-            <li><b>blob "…":</b> Paste a Candid <code>blob</code> literal with <code>\\xx</code> escapes (like strings printed by tools).</li>
-            <li><b>Candid Text:</b> Paste human-readable Candid (e.g. <code>(null)</code> or <code>()</code>) <i>only</i> to build the command below. Run it locally, then paste the <b>hex output</b> under <b>Hex Bytes</b>.</li>
+            <li><b>blob "…":</b> Paste a Candid <code>blob</code> literal with <code>\\xx</code> escapes.</li>
+            <li><b>Candid Text:</b> Paste human-readable Candid (e.g. <code>(null)</code> or <code>()</code>) <i>to build hex</i>. Run the command below or click the quick buttons, then paste the resulting <b>hex</b> under <b>Hex Bytes</b>.</li>
           </ol>
-          <p><b>didc command builder (based on your input box):</b></p>
+
+          <p><b>didc hex builder (copy/paste into the "Hex Bytes" box):</b></p>
           <pre class="cmd-pre">${didcCmd}</pre>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn secondary" @click=${(e) => this.#handleCopy(e, didcCmd, 'Copy didc Command')}>Copy didc Command</button>
             <a class="btn secondary" href="https://github.com/dfinity/candid/tree/master/tools/didc" target="_blank" rel="noreferrer">Install didc</a>
           </div>
-          <p style="margin-top:6px;"><b>Note:</b> The governance API exposes <code>arg_hash</code> (bytes), not the original <code>arg</code>. You must reconstruct the exact bytes and hash them to match on-chain.</p>
+
+          <p style="margin-top:6px;"><b>Important:</b> <code>didc encode</code> outputs <i>hex text</i>. To verify the on-chain <code>arg_hash</code>, hash the <b>bytes</b> by converting that hex back to bytes (<code>xxd -r -p</code>) before hashing.</p>
         </details>
 
         <div class="radio-group">
@@ -945,7 +996,7 @@ class App {
             ${p.extractedArtifact ? html`<p><b>Artifact (expected):</b> ${p.extractedArtifact}</p>` : ''}
             <pre>${this.rebuildScript}</pre>
             <button class="btn" @click=${(e) => this.#handleCopy(e, this.rebuildScript, 'Copy Script')}>Copy Script</button>
-            <p>Compare your local <code>sha256sum</code> with the <b>onchain WASM hash</b>: ${p.proposal_wasm_hash ?? 'N/A'}</p>
+            <p>Compare your local <code>sha256sum</code>/<code>shasum -a 256</code> with the <b>onchain WASM hash</b>: ${p.proposal_wasm_hash ?? 'N/A'}</p>
           </section>
 
           <section>

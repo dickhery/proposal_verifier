@@ -7,9 +7,15 @@ export function normalizeHex(input) {
     .trim()
     .replace(/^0x/i, "")
     .replace(/\s+/g, "");       // strip all whitespace
-  // Drop a trailing '%' (common when copying from some terminals)
+  // Drop a trailing '%' (common when copying from zsh when there's no final newline)
   if (s.endsWith("%")) s = s.slice(0, -1);
   return s;
+}
+
+export function looksLikeHexString(s) {
+  if (!s) return false;
+  const t = normalizeHex(s);
+  return /^[0-9a-fA-F]+$/.test(t) && t.length % 2 === 0;
 }
 
 // Convert hex string -> Uint8Array; strict about hex chars but tolerant of spacing.
@@ -38,6 +44,27 @@ export function equalBytes(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+// If someone pasted hex-of-hex (e.g., ran `didc encode ... | xxd -p`) we try to auto-fix.
+export function tryDecodeDoubleHex(hexText) {
+  try {
+    const once = hexToBytes(hexText);
+    // Are these bytes ASCII hex? If yes, decode again.
+    const allAsciiHex =
+      once.length % 2 === 0 &&
+      once.every((c) =>
+        (c >= 0x30 && c <= 0x39) || // 0-9
+        (c >= 0x41 && c <= 0x46) || // A-F
+        (c >= 0x61 && c <= 0x66)    // a-f
+      );
+    if (!allAsciiHex) return null;
+    const inner = new TextDecoder().decode(once);
+    if (!looksLikeHexString(inner)) return null;
+    return hexToBytes(inner);
+  } catch {
+    return null;
+  }
 }
 
 export async function sha256(message) {
