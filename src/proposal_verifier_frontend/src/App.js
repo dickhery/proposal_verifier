@@ -1,6 +1,7 @@
+// src/proposal_verifier_frontend/src/App.js
 import { html, render } from 'lit-html';
 import { proposal_verifier_backend } from 'declarations/proposal_verifier_backend';
-import { sha256 } from './utils.js';
+import { sha256, hexToBytes, normalizeHex, bytesToHex, equalBytes } from './utils.js';
 import { FAQView } from './FAQ.js';
 
 // CORS-friendly hosts for browser fetches
@@ -15,7 +16,7 @@ const CORS_ALLOWED_HOSTS = new Set([
 const RELEASE_URL_RE = /https:\/\/download\.dfinity\.(?:systems|network)\/ic\/[0-9a-f]{40}\/[^"'\s]+/ig;
 
 // Candid-ish text detection (coarse but useful for hints)
-const CANDID_PATTERN = /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b)/i;
+const CANDID_PATTERN = /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
 
 // Find a 64-hex near helpful markers
 function extractHexFromTextAroundMarkers(
@@ -57,15 +58,6 @@ export function extractAllUrls(text) {
   return [...new Set(sanitized)];
 }
 
-// Small helper: hex string ➜ Uint8Array
-function hexToBytes(hex) {
-  const s = hex.replace(/^0x/i, '').trim();
-  if (!/^[0-9a-fA-F]*$/.test(s) || s.length % 2 !== 0) throw new Error('Invalid hex input');
-  const out = new Uint8Array(s.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
-  return out;
-}
-
 // Parse "vec { ... }" with decimal or 0x.. bytes
 function parseVecNat8Literal(text) {
   const m = text.trim().match(/^vec\s*\{([\s\S]*)\}$/i);
@@ -84,7 +76,6 @@ function parseVecNat8Literal(text) {
 }
 
 // Parse Candid blob literal: blob "\xx\ab..."
-// We decode \xx (hex) escapes and raw ASCII characters.
 function parseBlobLiteral(text) {
   const m = text.trim().match(/^blob\s*"([\s\S]*)"$/i);
   if (!m) throw new Error('Not a blob literal; expected like: blob "\\ab\\cd..."');
@@ -98,10 +89,8 @@ function parseBlobLiteral(text) {
         out.push(parseInt(h1 + h2, 16));
         i += 2;
       } else {
-        // Fallback: keep the char escaped as-is (e.g., \" or \\n)
         const next = s[i + 1];
         if (next) {
-          // Basic escapes: treat as literal char
           out.push(next.charCodeAt(0));
           i += 1;
         }
@@ -111,6 +100,22 @@ function parseBlobLiteral(text) {
     }
   }
   return new Uint8Array(out);
+}
+
+// Extract a recommended Argument Verification command from the summary (if present)
+function extractArgVerificationCommand(summary) {
+  const titleIdx = summary.toLowerCase().indexOf("argument verification");
+  if (titleIdx < 0) return null;
+  const after = summary.slice(titleIdx);
+  // simple code fence or inline block capture
+  const fence = after.match(/```[\s\S]*?```/);
+  if (fence) {
+    const code = fence[0].replace(/```/g, "").trim();
+    if (/didc\s+encode/i.test(code) && /sha256sum/i.test(code)) return code;
+  }
+  // inline single-line fallback
+  const line = after.split('\n').find(l => /didc\s+encode/i.test(l));
+  return line ? line.trim() : null;
 }
 
 class App {
@@ -141,11 +146,12 @@ class App {
   argInputCurrent = '';
   argInputHint = '';
   extractedArgText = null;
+  recommendedArgCmd = null;     // from summary
 
   // NEW: type-aware fields
-  verificationSteps = null;     // string with newline-separated steps from backend
-  requiredTools = null;         // string from backend
-  typeChecklists = new Map();   // type -> [{label, checked}]
+  verificationSteps = null;
+  requiredTools = null;
+  typeChecklists = new Map();
 
   checklist = {
     fetch: false,
@@ -159,7 +165,7 @@ class App {
   constructor() { this.#render(); }
 
   #setFetching(on) { this.isFetching = on; this.#render(); }
-  #normalizeHex(s) { return String(s || '').trim().toLowerCase(); }
+  #normalizeHex(s) { return normalizeHex(s); }
 
   #updateChecklist() {
     this.checklist = {
@@ -170,7 +176,6 @@ class App {
       expected: !!this.expectedHash,
       rebuild: this.checklist.rebuild || false,
     };
-    // Keep the type-specific checklist in sync with the latest flags
     this.#updateTypeChecklist();
   }
 
@@ -220,20 +225,17 @@ class App {
 
       const text = await res.text();
 
-      // 1) expected WASM/release hash (prefer wasm_module_hash)
       const maybe = extractHexFromTextAroundMarkers(text);
       if (maybe) {
         this.expectedHash = maybe;
         this.expectedHashSource = 'ic-api';
       }
 
-      // 2) arg_hash (separate)
       const argMaybe = extractHexFromTextAroundMarkers(text, ['arg_hash']);
       if (argMaybe) {
         this.argHash = argMaybe;
       }
 
-      // 3) release package URLs
       const urls = new Set();
       const payloadUrls = text.match(RELEASE_URL_RE) || [];
       payloadUrls.forEach(u => urls.add(u));
@@ -284,7 +286,9 @@ class App {
         proposal_arg_hash: unwrap(base.proposal_arg_hash),
       };
 
-      // Source hashes
+      // Pull a recommended arg verification command from the summary (if present)
+      this.recommendedArgCmd = extractArgVerificationCommand(this.proposalData.summary);
+
       this.expectedHash =
         unwrap(data.expectedHashFromDashboard) ||
         this.proposalData.extractedHash ||
@@ -293,37 +297,30 @@ class App {
         unwrap(data.expectedHashSource) ||
         (this.proposalData.extractedHash ? 'proposal:summary' : null);
 
-      // Separate arg_hash (if exposed)
       this.argHash = unwrap(data.argHashFromDashboard) || this.argHash || null;
 
       this.payloadSnippetFromDashboard = unwrap(data.payloadSnippetFromDashboard);
       this.dashboardUrl = data.dashboardUrl;
 
-      // Optional Candid-looking arg text
       this.extractedArgText = unwrap(data.extractedArgText) || null;
 
-      // NEW: Type-specific content from backend
       this.verificationSteps = unwrap(data.verificationSteps) || null;
       this.requiredTools = unwrap(data.requiredTools) || null;
 
-      // Initialize Arg input UX defaults (collapsed guidance by default)
       this.argInputHint = '';
       this.argInputType = 'text';
       if (this.extractedArgText && CANDID_PATTERN.test(this.extractedArgText)) {
         this.argInputCurrent = this.extractedArgText;
         this.argInputType = 'candid';
         this.argInputHint = 'Detected Candid-like text. Encode with didc, then paste the hex under "Hex Bytes".';
+      } else if (this.payloadSnippetFromDashboard && CANDID_PATTERN.test(this.payloadSnippetFromDashboard)) {
+        this.argInputCurrent = this.payloadSnippetFromDashboard.trim();
+        this.argInputType = 'candid';
+        this.argInputHint = 'Detected possible Candid in payload snippet. Encode with didc before hashing.';
       } else {
-        if (this.payloadSnippetFromDashboard && CANDID_PATTERN.test(this.payloadSnippetFromDashboard)) {
-          this.argInputCurrent = this.payloadSnippetFromDashboard.trim();
-          this.argInputType = 'candid';
-          this.argInputHint = 'Detected possible Candid in payload snippet. Encode with didc before hashing.';
-        } else {
-          this.argInputCurrent = '';
-        }
+        this.argInputCurrent = '';
       }
 
-      // Prefill from ic-api
       await this.#prefillFromIcApi(id);
 
       // Commit check
@@ -385,31 +382,6 @@ class App {
     }
   }
 
-  async #tryClientSideHint(url) {
-    try {
-      const { hostname } = new URL(url);
-      if (!CORS_ALLOWED_HOSTS.has(hostname)) return false;
-      const res = await fetch(url, { credentials: 'omit', mode: 'cors' });
-      if (!res.ok) return false;
-      const ct = res.headers.get('content-type') || '';
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      let text = '';
-      if (ct.startsWith('text/') || ct.includes('json') || ct.includes('markdown') || ct.includes('html')) {
-        text = new TextDecoder().decode(bytes);
-      }
-      const found = extractHexFromTextAroundMarkers(text || '');
-      if (found) {
-        this.expectedHash = found;
-        this.expectedHashSource = new URL(url).hostname;
-        this.#render();
-        return true;
-      }
-    } catch {
-      // ignore
-    }
-    return false;
-  }
-
   async #handleFetchVerifyDoc() {
     const url = document.getElementById('docUrl').value || this.proposalData?.extractedDocUrl || '';
     const expected = document.getElementById('expectedDocHash').value || this.expectedHash || '';
@@ -428,10 +400,6 @@ class App {
           this.docPreview = `${contentType || 'binary'} (${bodyArray.length} bytes)`;
         }
       } else {
-        const { hostname } = new URL(url);
-        if (!CORS_ALLOWED_HOSTS.has(hostname)) {
-          throw new Error(`CORS likely blocked by ${hostname}. Use the shell commands below to download, then upload the file here.`);
-        }
         const fallback = await fetch(url, { credentials: 'omit', mode: 'cors' });
         if (!fallback.ok) throw new Error(result.err || `HTTP ${fallback.status}`);
         const bytes = new Uint8Array(await fallback.arrayBuffer());
@@ -537,8 +505,7 @@ class App {
         return html`
           <details class="type-guidance">
             <summary><b>Guidance for Node Provider Proposals</b></summary>
-            <p>These proposals verify documents (PDFs). Download the exact file provided by the proposer from the wiki (<a href="https://wiki.internetcomputer.org" target="_blank">IC Wiki</a>), upload below for each doc. Hashes must match summary.</p>
-            <p>Check forum announcement for context.</p>
+            <p>These proposals verify documents (PDFs). Download the exact file provided by the proposer from the wiki, upload below for each doc. Hashes must match the summary.</p>
           </details>
         `;
       case 'IcOsVersionDeployment':
@@ -550,40 +517,6 @@ class App {
         `;
       default: return null;
     }
-  }
-
-  #renderDocVerification() {
-    const docs = (this.proposalData?.extractedDocs || []).filter(d => d.hash != null);
-    if (!docs.length) return html`<p>No documents extracted. Paste URL or upload manually.</p>`;
-
-    return html`
-      <ul class="doc-list">
-        ${docs.map((d, idx) => {
-          const res = this.docResults[idx] || {match: false, error: '', preview: ''};
-          return html`
-            <li>
-              <b>${d.name}</b> (expected: ${d.hash || 'none'})
-              <input type="file" @change=${(e) => this.#handleFileUpload(e, idx)} />
-              <p><b>Match:</b> ${res.match ? '✅ Yes' : '❌ No'}</p>
-              ${res.error ? html`<p class="error">${res.error}</p>` : ''}
-              <p><b>Preview:</b> ${res.preview}</p>
-            </li>
-          `;
-        })}
-      </ul>
-    `;
-  }
-
-  #renderTopbar() {
-    return html`
-      <nav class="topbar">
-        <h1 class="grow">IC Proposal Verifier</h1>
-        ${this.view === 'home'
-          ? html`<button class="btn" @click=${() => { this.view = 'faq'; this.#render(); }}>Open FAQ</button>`
-          : html`<button class="btn" @click=${() => { this.view = 'home'; this.#render(); }}>&larr; Back</button>`
-        }
-      </nav>
-    `;
   }
 
   // --- Arg UX ---
@@ -602,15 +535,15 @@ class App {
     const v = (e?.target?.value ?? '').trim();
     this.argInputCurrent = v;
 
-    // Friendly hints / auto-detect
-    if (this.argInputType !== 'candid' && CANDID_PATTERN.test(v)) {
-      this.argInputHint = 'Looks like Candid text. Choose "Candid Text" and encode with didc first.';
+    // Helpful hints and mistake detection
+    if (/^blob\s*"/i.test(v)) {
+      this.argInputHint = 'This looks like a Candid blob literal (likely the onchain hash). You must hash the *argument bytes*, not the hash itself.';
+    } else if (this.argInputType !== 'candid' && CANDID_PATTERN.test(v)) {
+      this.argInputHint = 'Looks like Candid. Choose "Candid Text" and encode with didc first.';
     } else if (/^vec\s*\{[\s\S]*\}$/i.test(v)) {
       this.argInputHint = 'Looks like a Candid vec nat8. Choose “vec nat8 list”.';
-    } else if (/^blob\s*"/i.test(v)) {
-      this.argInputHint = 'Looks like a Candid blob literal. Choose “blob literal”.';
-    } else if (/^(0x)?[0-9a-fA-F]+$/.test(v) && (v.replace(/^0x/i, '').length % 2 === 0)) {
-      this.argInputHint = 'This looks like hex bytes. Choose "Hex Bytes".';
+    } else if (/^(0x)?[0-9a-fA-F]+[%]?$/.test(v)) {
+      this.argInputHint = 'Looks like hex. Choose "Hex Bytes".';
     } else {
       this.argInputHint = '';
     }
@@ -620,7 +553,42 @@ class App {
     const input = (this.argInputCurrent || '').trim();
     if (!input) return `didc encode '()' | xxd -p -c0 | tr -d '\\n'`;
     return `didc encode '(${input})' | xxd -p -c0 | tr -d '\\n'`;
-    // NOTE: For complex types, you may need to specify an explicit type with didc.
+  }
+
+  #renderArgShortcuts() {
+    const p = this.proposalData;
+    if (!p) return null;
+
+    const hasRecommended = !!this.recommendedArgCmd;
+
+    const setNullTemplate = () => {
+      this.argInputType = 'candid';
+      this.argInputCurrent = 'null';
+      this.argInputHint = 'Encode (null) with didc, then paste the hex under "Hex Bytes".';
+      this.#render();
+    };
+
+    const setUnitTemplate = () => {
+      this.argInputType = 'candid';
+      this.argInputCurrent = '()';
+      this.argInputHint = 'Encode () with didc, then paste the hex under "Hex Bytes".';
+      this.#render();
+    };
+
+    return html`
+      <details>
+        <summary><b>Quick helpers</b></summary>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin:8px 0;">
+          <button class="btn secondary" @click=${setNullTemplate}>Arg is <code>(null)</code></button>
+          <button class="btn secondary" @click=${setUnitTemplate}>Arg is <code>()</code></button>
+        </div>
+        ${hasRecommended ? html`
+          <p><b>From summary (recommended):</b></p>
+          <pre class="cmd-pre">${this.recommendedArgCmd}</pre>
+          <button class="btn secondary" @click=${(e) => this.#handleCopy(e, this.recommendedArgCmd, 'Copy Command')}>Copy Command</button>
+        ` : html`<p>No “Argument Verification” snippet found in this summary.</p>`}
+      </details>
+    `;
   }
 
   async #handleVerifyArgHash() {
@@ -636,7 +604,7 @@ class App {
 
     try {
       if (!inputExpected) {
-        this.hashError = 'No expected arg hash found (dashboard/api). Paste expected hash or refetch.';
+        this.hashError = 'No expected arg hash found. Paste expected hash or refetch.';
         this.hashMatch = false;
         this.isVerifyingArgs = false;
         this.#updateChecklist();
@@ -646,40 +614,39 @@ class App {
 
       let bytes = null;
 
-      // Explicit type chosen by user
       switch (this.argInputType) {
-        case 'hex':
-          if (!argsRaw) throw new Error('Paste hex bytes (from didc output or other source).');
+        case 'hex': {
+          if (!argsRaw) throw new Error('Paste hex bytes (from didc output or another tool).');
           bytes = hexToBytes(argsRaw);
           break;
-
-        case 'vec':
+        }
+        case 'vec': {
           if (!/^vec\s*\{[\s\S]*\}$/i.test(argsRaw)) throw new Error('Expected a Candid vec nat8 literal like: vec {1; 2; 0xFF}');
           bytes = parseVecNat8Literal(argsRaw);
           break;
-
-        case 'blob':
+        }
+        case 'blob': {
           if (!/^blob\s*"/i.test(argsRaw)) throw new Error('Expected a Candid blob literal like: blob "\\22\\c4\\81..."');
           bytes = parseBlobLiteral(argsRaw);
           break;
-
-        case 'text':
+        }
+        case 'text': {
           if (!argsRaw) throw new Error('Paste text to hash, or choose a more specific mode.');
           // Raw UTF-8 bytes of the pasted text (rarely correct for args)
           bytes = new TextEncoder().encode(argsRaw);
           break;
-
-        case 'candid':
+        }
+        case 'candid': {
           this.hashError = 'Candid text must be encoded first (see didc command below), then paste the resulting hex under "Hex Bytes".';
           this.hashMatch = false;
           this.isVerifyingArgs = false;
           this.#updateChecklist();
           this.#render();
           return;
-
-        default:
-          // Try to auto-detect if no explicit choice
-          if (/^(0x)?[0-9a-fA-F]+$/.test(argsRaw) && (argsRaw.replace(/^0x/i, '').length % 2 === 0)) {
+        }
+        default: {
+          // Auto-detect fallback
+          if (/^(0x)?[0-9a-fA-F]+[%]?$/.test(argsRaw)) {
             bytes = hexToBytes(argsRaw);
           } else if (/^vec\s*\{[\s\S]*\}$/i.test(argsRaw)) {
             bytes = parseVecNat8Literal(argsRaw);
@@ -691,6 +658,18 @@ class App {
             throw new Error('Provide arg bytes (hex), vec nat8, blob literal, or candid (encode first).');
           }
           break;
+        }
+      }
+
+      // Helpful warning: if user pasted the hash bytes themselves, warn.
+      const expectedBytes = hexToBytes(inputExpected);
+      if (bytes.length === 32 && equalBytes(bytes, expectedBytes)) {
+        this.hashError = 'You pasted the on-chain hash itself (32 bytes). Paste the *argument bytes* (e.g. output of `didc encode`), not the hash.';
+        this.hashMatch = false;
+        this.isVerifyingArgs = false;
+        this.#updateChecklist();
+        this.#render();
+        return;
       }
 
       const computedHash = await sha256(bytes);
@@ -710,22 +689,23 @@ class App {
     return html`
       <section>
         <h2>Verify Arg Hash (Binary)</h2>
+        ${this.#renderArgShortcuts()}
 
         <details>
           <summary>How to choose an input</summary>
           <ol>
-            <li><b>Hex Bytes:</b> Paste the bytes as hex (from <code>didc encode</code> or another tool). We hash bytes.</li>
-            <li><b>vec nat8 list:</b> Paste a Candid list like <code>vec {34; 196; 0x81; ...}</code>. We parse to bytes and hash.</li>
-            <li><b>blob "…":</b> Paste a Candid <code>blob</code> literal with <code>\\xx</code> escapes (like the strings <code>dfx</code> prints). We decode then hash.</li>
-            <li><b>Candid Text:</b> Paste human-readable Candid such as <code>()</code> or <code>record {}</code> <i>only</i> to build the command below. Run it locally, then paste the <b>hex output</b> under <b>Hex Bytes</b>.</li>
+            <li><b>Hex Bytes:</b> Paste the bytes as hex (from <code>didc encode</code> + <code>xxd -p</code>). We hash bytes.</li>
+            <li><b>vec nat8 list:</b> Paste a Candid list like <code>vec {1; 2; 0xFF}</code>. We parse to bytes and hash.</li>
+            <li><b>blob "…":</b> Paste a Candid <code>blob</code> literal with <code>\\xx</code> escapes (like strings printed by tools).</li>
+            <li><b>Candid Text:</b> Paste human-readable Candid (e.g. <code>(null)</code> or <code>()</code>) <i>only</i> to build the command below. Run it locally, then paste the <b>hex output</b> under <b>Hex Bytes</b>.</li>
           </ol>
-          <p><b>didc command builder (based on your input):</b></p>
+          <p><b>didc command builder (based on your input box):</b></p>
           <pre class="cmd-pre">${didcCmd}</pre>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button class="btn secondary" @click=${(e) => this.#handleCopy(e, didcCmd, 'Copy didc Command')}>Copy didc Command</button>
             <a class="btn secondary" href="https://github.com/dfinity/candid/tree/master/tools/didc" target="_blank" rel="noreferrer">Install didc</a>
           </div>
-          <p style="margin-top:6px;"><b>Note:</b> The governance API exposes <code>arg_hash</code> (bytes), not the original <code>arg</code>. You must reconstruct the exact bytes and hash them to match onchain.</p>
+          <p style="margin-top:6px;"><b>Note:</b> The governance API exposes <code>arg_hash</code> (bytes), not the original <code>arg</code>. You must reconstruct the exact bytes and hash them to match on-chain.</p>
         </details>
 
         <div class="radio-group">
@@ -766,19 +746,7 @@ class App {
     `;
   }
 
-  // --- NEW: type-specific steps/checklist renderers ---
-
-  #renderVerificationSteps() {
-    const steps = (this.verificationSteps || '').trim();
-    if (!steps) return html`<p>No type-specific steps available for this proposal.</p>`;
-    // Split by newlines, filter empties
-    const items = steps.split('\n').map(s => s.trim()).filter(Boolean);
-    return html`
-      <ol class="steps-list">
-        ${items.map(s => html`<li>${s}</li>`)}
-      </ol>
-    `;
-  }
+  // --- Type-specific checklist rendering ---
 
   #renderTypeChecklist() {
     const items = this.typeChecklists.get(this.proposalData?.proposalType) || [
@@ -817,14 +785,14 @@ class App {
           {label: 'Fetch Proposal', checked: this.checklist.fetch},
           {label: 'Expected Release Hash Present', checked: this.checklist.expected},
           {label: 'Commit Check (if provided)', checked: this.checklist.commit},
-          {label: 'Release Package Hash Verified', checked: this.checklist.docHash}, // reuse docHash flag for files you verify
+          {label: 'Release Package Hash Verified', checked: this.checklist.docHash},
         ];
         break;
       case 'ParticipantManagement':
         items = [
           {label: 'Fetch Proposal', checked: this.checklist.fetch},
           {label: 'All PDFs Hash-Matched', checked: this.checklist.docHash},
-          {label: 'Forum/Wiki Context Checked', checked: false}, // manual
+          {label: 'Forum/Wiki Context Checked', checked: false},
         ];
         break;
       case 'Governance':
@@ -852,12 +820,18 @@ class App {
     const loading = this.isFetching;
 
     const body = html`
-      ${this.#renderTopbar()}
+      <nav class="topbar">
+        <h1 class="grow">IC Proposal Verifier</h1>
+        ${this.view === 'home'
+          ? html`<button class="btn" @click=${() => { this.view = 'faq'; this.#render(); }}>Open FAQ</button>`
+          : html`<button class="btn" @click=${() => { this.view = 'home'; this.#render(); }}>&larr; Back</button>`
+        }
+      </nav>
 
       <section class="advisory">
         <p>
           <b>Advisory:</b> This tool surfaces links, hashes, and commands to assist verification.
-          Always prefer <b>reproducible builds</b> and compare with onchain metadata.
+          Always prefer <b>reproducible builds</b> and compare with on-chain metadata.
         </p>
       </section>
 
@@ -923,9 +897,7 @@ class App {
           </section>
 
           ${this.#renderReleaseCommands()}
-
           ${this.#renderTypeGuidance()}
-
           ${this.#renderArgSection(p)}
 
           <section>
@@ -934,7 +906,26 @@ class App {
               <summary>How to use</summary>
               <p>For PDFs/WASMs/tar.zst: download from links (e.g., wiki/forum), upload below. Hashes must match the proposal summary or dashboard.</p>
             </details>
-            ${this.#renderDocVerification()}
+            ${(() => {
+              const docs = (this.proposalData?.extractedDocs || []).filter(d => d.hash != null);
+              if (!docs.length) return html`<p>No documents extracted. Paste URL or upload manually.</p>`;
+              return html`
+                <ul class="doc-list">
+                  ${docs.map((d, idx) => {
+                    const res = this.docResults[idx] || {match: false, error: '', preview: ''};
+                    return html`
+                      <li>
+                        <b>${d.name}</b> (expected: ${d.hash || 'none'})
+                        <input type="file" @change=${(e) => this.#handleFileUpload(e, idx)} />
+                        <p><b>Match:</b> ${res.match ? '✅ Yes' : '❌ No'}</p>
+                        ${res.error ? html`<p class="error">${res.error}</p>` : ''}
+                        <p><b>Preview:</b> ${res.preview}</p>
+                      </li>
+                    `;
+                  })}
+                </ul>
+              `;
+            })()}
             <input id="docUrl" placeholder="Document URL (text/JSON only)" value=${p.extractedDocUrl ?? ''} />
             <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
             <button class="btn" @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL (text only)</button>
@@ -959,7 +950,12 @@ class App {
 
           <section>
             <h2>Verification Steps for ${p.proposalType}</h2>
-            ${this.#renderVerificationSteps()}
+            ${(() => {
+              const steps = (this.verificationSteps || '').trim();
+              if (!steps) return html`<p>No type-specific steps available for this proposal.</p>`;
+              const items = steps.split('\n').map(s => s.trim()).filter(Boolean);
+              return html`<ol class="steps-list">${items.map(s => html`<li>${s}</li>`)}</ol>`;
+            })()}
           </section>
 
           <section>
