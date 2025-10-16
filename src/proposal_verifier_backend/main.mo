@@ -966,7 +966,7 @@ persistent actor verifier {
   // -----------------------------
   // Core getters (authenticated + billed)
   // -----------------------------
-  public shared ({ caller }) func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
+  func getProposalInternal(id : Nat64, caller : Principal) : async Result.Result<SimplifiedProposalInfo, Text> {
     if (id == 0) return #err("Proposal id must be greater than zero");
     switch (requireAuth(caller)) {
       case (#err(e)) return #err(e);
@@ -1070,6 +1070,10 @@ persistent actor verifier {
     } catch (e) {
       #err("Failed to query governance canister: " # Error.message(e));
     };
+  };
+
+  public shared ({ caller }) func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
+    await getProposalInternal(id, caller);
   };
 
   // Commit existence check (GitHub) - only if repo/commit present
@@ -1339,7 +1343,7 @@ persistent actor verifier {
 
   // Augmented getter that merges base summary info with ic-api JSON
   public shared ({ caller }) func getProposalAugmented(id : Nat64) : async Result.Result<AugmentedProposalInfo, Text> {
-    switch (await getProposal(id)) {
+    switch (await getProposalInternal(id, caller)) {
       case (#err(e)) { #err(e) };
       case (#ok(base)) {
         let dashboardUrl = "https://dashboard.internetcomputer.org/proposal/" # Nat64.toText(id);
