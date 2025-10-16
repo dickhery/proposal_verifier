@@ -167,8 +167,8 @@ persistent actor verifier {
   // Anonymous principal
   let ANON : Principal = Principal.fromText("2vxsx-fae");
 
-  // **** FEES (now 0.1 ICP each) ****
-  let FEE_FETCH_PROPOSAL_E8S : Nat64 = 10_000_000; // 0.1 ICP
+  // **** FEES (Fetch Proposal now 0.2 ICP) ****
+  let FEE_FETCH_PROPOSAL_E8S : Nat64 = 20_000_000; // 0.2 ICP
   let FEE_HTTP_OUTCALL_E8S : Nat64 = 10_000_000; // 0.1 ICP per HTTP outcall
 
   // ICP transfer fee (e8s) for legacy ledger transfer
@@ -185,6 +185,7 @@ persistent actor verifier {
     timestamp : Time.Time;
   };
   stable var depositCache : [DepositCacheEntry] = [];
+  stable var lastFetchCyclesBurned : Nat = 0;
   let DEPOSIT_CACHE_MAX : Nat = 128;
 
   func cacheGet(memo : Nat64) : ?DepositCacheEntry {
@@ -967,22 +968,33 @@ persistent actor verifier {
   // Core getters (authenticated + billed)
   // -----------------------------
   func getProposalInternal(id : Nat64, caller : Principal) : async Result.Result<SimplifiedProposalInfo, Text> {
-    if (id == 0) return #err("Proposal id must be greater than zero");
+    let cyclesBefore = Cycles.balance();
+    func finish(res : Result.Result<SimplifiedProposalInfo, Text>) : Result.Result<SimplifiedProposalInfo, Text> {
+      let cyclesAfter = Cycles.balance();
+      if (cyclesBefore > cyclesAfter) {
+        lastFetchCyclesBurned := cyclesBefore - cyclesAfter;
+      } else {
+        lastFetchCyclesBurned := 0;
+      };
+      res
+    };
+
+    if (id == 0) return finish(#err("Proposal id must be greater than zero"));
     switch (requireAuth(caller)) {
-      case (#err(e)) return #err(e);
+      case (#err(e)) return finish(#err(e));
       case (#ok(())) {};
     };
 
     // bill + forward fee before work (single charge)
     switch (await chargeAndForward(caller, FEE_FETCH_PROPOSAL_E8S, "fetch proposal")) {
-      case (#err(e)) return #err(e);
+      case (#err(e)) return finish(#err(e));
       case (#ok(())) {};
     };
 
     try {
       let responseOpt = await governance.get_proposal_info(id);
       switch (responseOpt) {
-        case null { #err("Proposal not found") };
+        case null { finish(#err("Proposal not found")) };
         case (?info) {
           switch (info.id, info.proposal) {
             case (?pid, ?proposal) {
@@ -1045,7 +1057,7 @@ persistent actor verifier {
                 case _ {};
               };
 
-              #ok({
+              finish(#ok({
                 id = pid.id;
                 summary = summary;
                 url = proposal.url;
@@ -1061,14 +1073,14 @@ persistent actor verifier {
                 extractedDocs;
                 proposal_arg_hash;
                 proposal_wasm_hash;
-              });
+              }));
             };
-            case _ { #err("Proposal missing summary data") };
+            case _ { finish(#err("Proposal missing summary data")) };
           };
         };
       };
     } catch (e) {
-      #err("Failed to query governance canister: " # Error.message(e));
+      finish(#err("Failed to query governance canister: " # Error.message(e)));
     };
   };
 
@@ -1402,6 +1414,10 @@ persistent actor verifier {
   // -----------------------------
   // Debug
   // -----------------------------
+  public query func getLastFetchCyclesBurned() : async Nat {
+    lastFetchCyclesBurned;
+  };
+
   public query func getCycleBalance() : async Nat {
     Cycles.balance();
   };
