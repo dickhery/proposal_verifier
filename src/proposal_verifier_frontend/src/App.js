@@ -1482,7 +1482,7 @@ ${linuxVerify}</pre>
       ${this.identity
         ? html`
             <section class="advisory">
-              <details open>
+              <details>
                 <summary><b>Fund your balance</b></summary>
                 <p>
                   Send ICP to <b>your deposit address</b> below. Fees are deducted automatically
@@ -1508,9 +1508,8 @@ ${linuxVerify}</pre>
                       : '(calculating…)'}
                   </p>
                   <p class="note">
-                    <b>Important:</b> This is the address that funds your Proposal Verifier account.
-                    Deposits to this address are automatically credited as soon as they are detected
-                    on-chain.
+                    <b>Important:</b> After making a deposit, click <i>Refresh balances</i> below to
+                    apply the funds to your Proposal Verifier account.
                   </p>
                 </div>
 
@@ -1524,31 +1523,10 @@ ${linuxVerify}</pre>
                 </ul>
 
                 <details>
-                  <summary><b>Advanced (principal + subaccount)</b></summary>
-                  <ul>
-                    <li>
-                      <b>Owner (canister principal):</b>
-                      <code>${this.depositOwner ?? '(loading...)'}</code>
-                    </li>
-                    <li>
-                      <b>Your subaccount (hex):</b>
-                      <code>${this.depositSubaccountHex ?? '(loading...)'}</code>
-                      <br /><small
-                        >(Only for wallets that support “send to principal + subaccount”.)</small
-                      >
-                    </li>
-                  </ul>
-                </details>
-
-                <details>
                   <summary>How to send</summary>
                   <p>
                     <b>Most wallets (incl. NNS):</b> paste the <i>Deposit Address</i> above into the
                     “To” field and send ICP.
-                  </p>
-                  <p>
-                    <b>Wallets with principal + subaccount:</b> send to the canister principal under
-                    <b>Advanced</b>, and paste your subaccount hex under “Advanced”.
                   </p>
                   <p><b>CLI (dfx):</b></p>
                   <pre class="cmd-pre">dfx ledger transfer ${this.depositAccountIdentifierHex ||
@@ -1571,15 +1549,6 @@ ${linuxVerify}</pre>
                   <div>
                     <b>On-chain (deposit subaccount):</b>
                     ${(this.depositLedgerBalance / 1e8).toFixed(8)} ICP
-                  </div>
-                  <div>
-                    <b>Credited to app:</b>
-                    ${(this.depositCreditedTotal / 1e8).toFixed(8)} ICP
-                  </div>
-                  <div>
-                    <b>Available to credit:</b>
-                    ${(this.depositAvailableToCredit / 1e8).toFixed(8)} ICP
-                    <small style="margin-left:6px;">(auto-credited when detected)</small>
                   </div>
                 </div>
               </details>
