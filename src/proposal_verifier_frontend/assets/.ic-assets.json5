@@ -2,7 +2,7 @@
   {
     "match": "**/*",
     "headers": {
-      "Content-Security-Policy": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://icp0.io https://*.icp0.io https://ic0.app https://*.ic0.app https://icp-api.io https://ic-api.internetcomputer.org https://api.github.com https://raw.githubusercontent.com https://forum.dfinity.org https://dashboard.internetcomputer.org https://download.dfinity.systems https://download.dfinity.network; img-src 'self' data: https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; script-src-elem 'self' https://cdn.jsdelivr.net; frame-src 'self' https://ic0.app https://*.ic0.app https://icp0.io https://*.icp0.io data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
+      "Content-Security-Policy": "default-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:* https://icp0.io https://*.icp0.io https://ic0.app https://*.ic0.app https://icp-api.io https://ic-api.internetcomputer.org https://api.github.com https://raw.githubusercontent.com https://forum.dfinity.org https://dashboard.internetcomputer.org https://download.dfinity.systems https://download.dfinity.network https://id.ai; img-src 'self' data: https: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; script-src-elem 'self' https://cdn.jsdelivr.net; frame-src 'self' https://ic0.app https://*.ic0.app https://icp0.io https://*.icp0.io https://id.ai data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
       "Permissions-Policy": "clipboard-read=(self), clipboard-write=(self)"
     },
     "security_policy": "standard"

@@ -87,3 +87,40 @@ export async function sha256(message) {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+import { Principal } from "@dfinity/principal";
+import { sha224 } from "js-sha256";
+
+// crc32 of a byte array (returns unsigned 32-bit number)
+export function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    let c = (crc ^ bytes[i]) & 0xff;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    crc = (crc >>> 8) ^ c;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// Compute legacy Account Identifier (64-hex) for (owner principal, 32-byte subaccount)
+export function principalToAccountIdentifier(ownerPrincipalText, subaccountHex) {
+  const owner = Principal.fromText(ownerPrincipalText).toUint8Array();
+  const sub = hexToBytes(subaccountHex); // 32 bytes expected
+  if (sub.length !== 32) throw new Error("Subaccount must be 32 bytes.");
+
+  // "\x0Aaccount-id" domain separator
+  const padding = new Uint8Array([0x0a, 0x61, 0x63, 0x63, 0x6f, 0x75, 0x6e, 0x74, 0x2d, 0x69, 0x64]);
+  const data = new Uint8Array(padding.length + owner.length + sub.length);
+  data.set(padding, 0);
+  data.set(owner, padding.length);
+  data.set(sub, padding.length + owner.length);
+
+  const hashHex = sha224.create().update(data).hex();      // 28-byte hash (56 hex)
+  const hashBytes = hexToBytes(hashHex);
+  const c = crc32(hashBytes);
+
+  const out = new Uint8Array(4 + hashBytes.length);
+  out[0] = (c >>> 24) & 0xff; out[1] = (c >>> 16) & 0xff; out[2] = (c >>> 8) & 0xff; out[3] = c & 0xff;
+  out.set(hashBytes, 4);
+  return bytesToHex(out);
+}

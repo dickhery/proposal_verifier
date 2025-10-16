@@ -14,6 +14,7 @@ const DEV_CSP =
   "https://api.github.com https://raw.githubusercontent.com " +
   "https://forum.dfinity.org https://dashboard.internetcomputer.org " +
   "https://download.dfinity.systems https://download.dfinity.network " +
+  "https://id.ai " +  // Added for II
   "data: blob:; " +
   "img-src 'self' data: https: blob:; " +           // ✅ allow blob: images in dev
   "style-src 'self' 'unsafe-inline'; " +
@@ -21,6 +22,7 @@ const DEV_CSP =
   "script-src-elem 'self' https://cdn.jsdelivr.net; " + // ✅ load your embed script in dev
   "object-src 'none'; " +
   "frame-ancestors 'none'; " +
+  "frame-src 'self' https://id.ai; " +  // Added for II
   "base-uri 'self';";
 
 export default defineConfig({
