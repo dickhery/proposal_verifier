@@ -143,7 +143,7 @@ persistent actor verifier {
       #BadFee : { expected_fee : Tokens };
       #InsufficientFunds : { balance : Tokens };
       #TxTooOld : { allowed_window_nanos : Nat64 };
-      // FIX: this is a payload-less tag (null), per the ledger spec
+      // payload-less per spec
       #TxCreatedInFuture;
       #TxDuplicate : { duplicate_of : Nat64 };
     };
@@ -232,6 +232,24 @@ persistent actor verifier {
     };
 
     depositCache := arr;
+  };
+
+  // ---- NEW: track how much on-chain balance we've already credited per user ----
+  stable var creditedByUser : [(Principal, Nat64)] = [];
+
+  func getCredited(p : Principal) : Nat64 {
+    for (pair in creditedByUser.vals()) { if (pair.0 == p) return pair.1 };
+    0;
+  };
+
+  func setCredited(p : Principal, v : Nat64) {
+    let buf = Buffer.Buffer<(Principal, Nat64)>(Array.size(creditedByUser));
+    var found = false;
+    for (pair in creditedByUser.vals()) {
+      if (pair.0 == p) { buf.add((p, v)); found := true } else { buf.add(pair) };
+    };
+    if (not found) { buf.add((p, v)) };
+    creditedByUser := Buffer.toArray(buf);
   };
 
   // Beneficiary Account Identifier (32 bytes) where fees are forwarded
@@ -374,8 +392,79 @@ persistent actor verifier {
     };
   };
 
+  // -------- NEW: Auto-credit based on on-chain subaccount balance (no amount field) --------
+  public shared ({ caller }) func recordDepositAuto() : async Result.Result<{
+    credited_delta_e8s : Nat64;
+    total_internal_balance_e8s : Nat64;
+    ledger_balance_e8s : Nat;
+    credited_total_e8s : Nat64;
+  }, Text> {
+    switch (requireAuth(caller)) {
+      case (#err(e)) return #err(e);
+      case (#ok(())) {};
+    };
+
+    let owner = Principal.fromActor(verifier);
+    let sub = principalToSubaccount(caller);
+
+    try {
+      let balNat : Nat = await ICP_LEDGER.icrc1_balance_of({ owner = owner; subaccount = ?sub });
+      let prevCredited : Nat64 = getCredited(caller);
+
+      if (balNat <= Nat64.toNat(prevCredited)) {
+        return #err("No new deposits detected on your subaccount.");
+      };
+
+      let deltaNat : Nat = balNat - Nat64.toNat(prevCredited);
+      let delta64 : Nat64 = Nat64.fromNat(deltaNat);
+
+      // Credit the delta internally and advance the credited marker
+      addBalanceInternal(caller, delta64);
+      setCredited(caller, prevCredited + delta64);
+
+      #ok({
+        credited_delta_e8s = delta64;
+        total_internal_balance_e8s = getBalanceInternal(caller);
+        ledger_balance_e8s = balNat;
+        credited_total_e8s = prevCredited + delta64;
+      });
+    } catch (e) {
+      #err("Ledger query failed: " # Error.message(e));
+    };
+  };
+
+  // -------- NEW: Deposit status helper for UI --------
+  public shared ({ caller }) func getDepositStatus() : async {
+    owner : Principal;
+    subaccount : [Nat8];
+    ledger_balance_e8s : Nat;
+    credited_total_e8s : Nat64;
+    available_to_credit_e8s : Nat;
+  } {
+    let owner = Principal.fromActor(verifier);
+    let sub = principalToSubaccount(caller);
+
+    var ledgerBal : Nat = 0;
+    // best-effort; if query fails, leave 0
+    try {
+      ledgerBal := await ICP_LEDGER.icrc1_balance_of({ owner = owner; subaccount = ?sub });
+    } catch (e) {};
+
+    let credited = getCredited(caller);
+    let available : Nat = if (ledgerBal > Nat64.toNat(credited)) { ledgerBal - Nat64.toNat(credited) } else { 0 };
+
+    {
+      owner = owner;
+      subaccount = sub;
+      ledger_balance_e8s = ledgerBal;
+      credited_total_e8s = credited;
+      available_to_credit_e8s = available;
+    }
+  };
+
   // Trustless credit of balance after a user transfers ICP to the above account.
   // Verifies the (owner, subaccount) balance on the ICP ICRC-1 ledger.
+  // (Kept for backward compatibility; now also advances the credited marker)
   public shared ({ caller }) func recordDeposit(amount_e8s : Nat64, memo : ?Nat64) : async Result.Result<Nat64, Text> {
     switch (requireAuth(caller)) {
       case (#err(e)) return #err(e);
@@ -416,6 +505,10 @@ persistent actor verifier {
       cacheUpsert({ memo = memoKey; amount_e8s = amount_e8s; timestamp = now });
 
       addBalanceInternal(caller, amount_e8s);
+      // NEW: also advance the credited marker so auto-credit uses deltas correctly
+      let prev = getCredited(caller);
+      setCredited(caller, prev + amount_e8s);
+
       #ok(getBalanceInternal(caller));
     } catch (e) {
       #err("Ledger query failed: " # Error.message(e));
@@ -626,7 +719,7 @@ persistent actor verifier {
       Iter.toArray(Text.split(summary, #char '\n')),
       func(l) { Text.startsWith(l, #text "* ") },
     );
-    let docs = Array.init<{ name : Text; hash : ?Text }>(Array.size(lines), { name = ""; hash = null }); // FIX
+    let docs = Array.init<{ name : Text; hash : ?Text }>(Array.size(lines), { name = ""; hash = null });
     var idx = 0;
     for (line in lines.vals()) {
       let trimmed = Text.trimStart(line, #char '*');
@@ -861,7 +954,7 @@ persistent actor verifier {
       case (#ok(())) {};
     };
 
-    // NEW: bill + forward fee before work
+    // bill + forward fee before work (single charge)
     switch (await chargeAndForward(caller, FEE_FETCH_PROPOSAL_E8S, "fetch proposal")) {
       case (#err(e)) return #err(e);
       case (#ok(())) {};
@@ -967,7 +1060,7 @@ persistent actor verifier {
       case (#ok(())) {};
     };
 
-    // NEW: bill + forward
+    // bill + forward
     switch (await chargeAndForward(caller, FEE_HTTP_OUTCALL_E8S, "GitHub commit check")) {
       case (#err(e)) return #err(e);
       case (#ok(())) {};
@@ -1021,7 +1114,7 @@ persistent actor verifier {
       return #err("Domain likely dynamic / non-deterministic for canister outcalls; fetch in browser instead.");
     };
 
-    // NEW: bill + forward
+    // bill + forward
     switch (await chargeAndForward(caller, FEE_HTTP_OUTCALL_E8S, "fetch document")) {
       case (#err(e)) return #err(e);
       case (#ok(())) {};
@@ -1090,15 +1183,10 @@ persistent actor verifier {
   };
 
   // -----------------------------
-  // Dashboard API helpers (billed)
+  // Dashboard API helpers (no extra billing here to avoid double charge)
   // -----------------------------
   func fetchIcApiProposalJsonText(id : Nat64, caller : Principal) : async ?Text {
-    // Bill via outer call (getProposalAugmented calls getProposal and then this helper with charge inside),
-    // but if you want to bill here instead, uncomment the following two lines and comment the outer billing.
-    switch (await chargeAndForward(caller, FEE_HTTP_OUTCALL_E8S, "fetch dashboard JSON")) {
-      case (#err(_)) return null;
-      case (#ok(())) {};
-    };
+    // (bill once in getProposal; do NOT bill again here)
 
     let url = "https://ic-api.internetcomputer.org/api/v3/proposals/" # Nat64.toText(id);
     let req : HttpRequestArgs = {

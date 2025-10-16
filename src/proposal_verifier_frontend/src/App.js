@@ -165,9 +165,14 @@ class App {
   // DEFAULT FEES bumped to 0.1 ICP per billed action (10_000_000 e8s)
   fees = { fetchProposal_e8s: 10_000_000n, httpOutcall_e8s: 10_000_000n }; // defaults, loaded from backend
 
+  // Deposit/account state
   depositOwner = null; // canister principal (string)
   depositSubaccountHex = null; // subaccount (hex)
-  depositAccountIdentifierHex = null; // NEW: legacy 32-byte address (64 hex)
+  depositAccountIdentifierHex = null; // legacy 32-byte address (64 hex)
+  // NEW: live balances and auto-credit tracking
+  depositLedgerBalance = 0;         // Nat (as JS number for display)
+  depositCreditedTotal = 0;         // Nat64-ish (display)
+  depositAvailableToCredit = 0;     // Nat delta (display)
 
   // --- app state ---
   proposalData = null;
@@ -267,9 +272,15 @@ class App {
     this.userPrincipal = null;
     this.backend = anon_backend;
     this.userBalance = 0;
+
+    // Clear deposit state
     this.depositOwner = null;
     this.depositSubaccountHex = null;
     this.depositAccountIdentifierHex = null;
+    this.depositLedgerBalance = 0;
+    this.depositCreditedTotal = 0;
+    this.depositAvailableToCredit = 0;
+
     this.#render();
   }
 
@@ -288,7 +299,8 @@ class App {
 
     await this.#refreshBalance();
     await this.#loadFees();
-    await this.#loadDepositAccount();
+    // NEW: get owner/subaccount + live ledger/credited status
+    await this.#loadDepositStatus();
   }
 
   async #refreshBalance() {
@@ -308,13 +320,42 @@ class App {
     }
   }
 
+  // ----------------- deposit status (new) -----------------
+
+  async #loadDepositStatus() {
+    try {
+      const s = await this.backend.getDepositStatus();
+      // owner + subaccount for address calculation
+      this.depositOwner = String(s.owner);
+      this.depositSubaccountHex = bytesToHex(new Uint8Array(s.subaccount));
+      try {
+        this.depositAccountIdentifierHex = principalToAccountIdentifier(
+          this.depositOwner,
+          this.depositSubaccountHex,
+        );
+      } catch {
+        this.depositAccountIdentifierHex = null;
+      }
+      // balances
+      this.depositLedgerBalance = Number(s.ledger_balance_e8s || 0);
+      this.depositCreditedTotal = Number(s.credited_total_e8s || 0);
+      this.depositAvailableToCredit = Number(s.available_to_credit_e8s || 0);
+    } catch (e) {
+      // Fallback to previous method if needed (owner+sub)
+      await this.#loadDepositAccount(); // will populate owner/sub/address
+      this.depositLedgerBalance = 0;
+      this.depositCreditedTotal = 0;
+      this.depositAvailableToCredit = 0;
+    }
+    this.#render();
+  }
+
+  // Legacy: load only owner/subaccount if status helper not available
   async #loadDepositAccount() {
     try {
       const acc = await this.backend.getDepositAccount();
-      // acc.owner is a Principal (stringified fine); subaccount is [Nat8]
       this.depositOwner = String(acc.owner);
       this.depositSubaccountHex = bytesToHex(new Uint8Array(acc.subaccount));
-      // NEW: compute the legacy Account Identifier (wallet-friendly address)
       try {
         this.depositAccountIdentifierHex = principalToAccountIdentifier(
           this.depositOwner,
@@ -330,22 +371,25 @@ class App {
     }
   }
 
-  async #recordDeposit() {
-    if (!this.identity) return alert('Login required to deposit.');
-    const amtStr = (document.getElementById('depositAmount')?.value || '').trim();
-    const memoStr = (document.getElementById('depositMemo')?.value || '').trim();
-    const amount = parseFloat(amtStr);
-    if (!Number.isFinite(amount) || amount <= 0) return alert('Enter a positive amount (ICP).');
-
-    const e8s = BigInt(Math.round(amount * 1e8));
-    const memoOpt = memoStr ? [BigInt(memoStr)] : [];
+  // Auto-credit whatever arrived on-chain (no amount field)
+  async #recordAllDeposits() {
+    if (!this.identity) return alert('Login required to record deposits.');
     try {
-      const res = await this.backend.recordDeposit(e8s, memoOpt);
+      const res = await this.backend.recordDepositAuto();
       if (res.ok !== undefined) {
-        this.userBalance = Number(res.ok);
-        alert('Deposit verified & recorded.');
+        const r = res.ok;
+        this.userBalance = Number(r.total_internal_balance_e8s || 0);
+        this.depositLedgerBalance = Number(r.ledger_balance_e8s || 0);
+        this.depositCreditedTotal = Number(r.credited_total_e8s || 0);
+        this.depositAvailableToCredit = Math.max(
+          0,
+          this.depositLedgerBalance - this.depositCreditedTotal,
+        );
+        alert(
+          `Credited ${(Number(r.credited_delta_e8s) / 1e8).toFixed(8)} ICP from your ledger subaccount.`,
+        );
       } else {
-        alert('Deposit error: ' + (res.err || 'unknown error'));
+        alert('Deposit error: ' + (res.err || 'unknown'));
       }
     } catch (e) {
       alert('Deposit failed: ' + (e?.message || String(e)));
@@ -560,7 +604,10 @@ class App {
           preview: '',
         }));
 
-      await this.#refreshBalance(); // reflect fees deducted
+      // Reflect billed deduction and refresh deposit status
+      await this.#refreshBalance();
+      await this.#loadDepositStatus();
+
       this.#updateChecklist();
     } catch (err) {
       alert(err?.message || String(err));
@@ -613,7 +660,9 @@ class App {
         } else {
           this.docPreview = `${contentType || 'binary'} (${bodyArray.length} bytes)`;
         }
-        await this.#refreshBalance(); // reflect billed outcall
+        // reflect billed outcall + update deposit status
+        await this.#refreshBalance();
+        await this.#loadDepositStatus();
       } else {
         // Fallback to browser fetch (no billing, but CORS-limited)
         const u = new URL(url);
@@ -1250,52 +1299,55 @@ ${linuxVerify}</pre>
         ? html`
             <section class="advisory">
               <details open>
-                <summary><b>Deposit ICP to use billed features</b></summary>
+                <summary><b>Fund your balance</b></summary>
                 <p>
-                  Send ICP to <b>your user subaccount under this canister</b>, then click
-                  <i>Record Deposit</i> to credit your in-app balance.
+                  Send ICP to <b>your deposit address</b> below, then click
+                  <i>Record new deposits</i>. We’ll auto-credit everything detected on-chain.
                 </p>
+
                 <ul>
                   <li>
-                    <b>Account Identifier (address)</b>:<br />
+                    <b>Your PID (principal):</b> <code>${this.userPrincipal}</code>
+                  </li>
+                  <li>
+                    <b>Deposit Address (Account Identifier):</b><br />
                     ${this.depositAccountIdentifierHex
                       ? html`<code>${this.depositAccountIdentifierHex}</code>
-                          <button
-                            class="btn secondary"
-                            @click=${(e) =>
-                              this.#handleCopy(e, this.depositAccountIdentifierHex, 'Copy Address')}
-                          >
+                          <button class="btn secondary"
+                            @click=${(e)=>this.#handleCopy(e, this.depositAccountIdentifierHex, 'Copy Address')}>
                             Copy
                           </button>`
-                      : html`(calculating…)`}
+                      : '(calculating…)'}
                   </li>
                   <li><b>Owner (canister principal):</b> <code>${this.depositOwner ?? '(loading...)'}</code></li>
                   <li><b>Your subaccount (hex):</b> <code>${this.depositSubaccountHex ?? '(loading...)'}</code></li>
                 </ul>
+
                 <details>
                   <summary>How to send</summary>
-                  <p><b>Most wallets:</b> paste the <i>Account Identifier</i> above into the address box and send ICP.</p>
-                  <p>
-                    <b>Wallets that support principal + subaccount:</b> choose “send to principal/canister”, paste the
-                    canister principal above, open <i>Advanced</i> and paste your <i>subaccount hex</i>.
-                  </p>
-                  <p>
-                    <b>CLI (dfx):</b>
-                  </p>
+                  <p><b>Most wallets (incl. NNS):</b> paste the <i>Deposit Address</i> above into the "To" field and send ICP.</p>
+                  <p><b>Wallets with principal + subaccount:</b> send to the canister principal above and paste your subaccount hex under “Advanced”.</p>
+                  <p><b>CLI (dfx):</b></p>
                   <pre class="cmd-pre">dfx ledger transfer ${this.depositAccountIdentifierHex || '<ADDRESS>'} --icp 0.5 --memo 0</pre>
                 </details>
+
                 <p style="margin-top:6px;">
                   <small>
-                    Each billed action forwards <b>0.1 ICP</b> from your subaccount to the maintainer address (plus
-                    <b>0.0001 ICP</b> network fee). After sending, wait for confirmation then click <i>Record Deposit</i>.
-                    The app verifies your subaccount balance on the ICP Ledger before crediting your in-app balance.
+                    You are only charged when you run a billed action (e.g. <b>Fetch Proposal</b> or a canister HTTP fetch).
+                    We forward the fee from your deposit subaccount and also deduct it from your in-app balance.
                   </small>
                 </p>
-                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                  <input id="depositAmount" type="number" step="0.00000001" min="0" placeholder="Amount (ICP)" />
-                  <input id="depositMemo" type="number" step="1" min="0" placeholder="Memo (optional)" />
-                  <button class="btn secondary" @click=${() => this.#recordDeposit()}>Record Deposit</button>
-                  <button class="btn secondary" @click=${() => this.#refreshBalance()}>Refresh Balance</button>
+
+                <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+                  <button class="btn secondary" @click=${() => this.#loadDepositStatus()}>Refresh balances</button>
+                  <button class="btn secondary" @click=${() => this.#recordAllDeposits()}>Record new deposits</button>
+                </div>
+
+                <div style="margin-top:8px;">
+                  <b>On-chain (deposit subaccount):</b>
+                  ${(this.depositLedgerBalance/1e8).toFixed(8)} ICP &nbsp;|&nbsp;
+                  <b>Already credited:</b> ${(this.depositCreditedTotal/1e8).toFixed(8)} ICP &nbsp;|&nbsp;
+                  <b>Available to credit:</b> ${(this.depositAvailableToCredit/1e8).toFixed(8)} ICP
                 </div>
               </details>
             </section>
