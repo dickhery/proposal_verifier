@@ -191,6 +191,10 @@ function encodeUnitHex() {
   return bytesToHex(bytes);
 }
 
+const NETWORK_FEE_E8S = 10_000; // 0.0001 ICP
+const BENEFICIARY_ACCOUNT_IDENTIFIER =
+  '2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e';
+
 class App {
   view = 'home'; // 'home' | 'faq'
 
@@ -201,8 +205,8 @@ class App {
   userPrincipal = null;
   userBalance = 0; // in e8s
 
-  // DEFAULT FEES bumped to 0.1 ICP per billed action (10_000_000 e8s)
-  fees = { fetchProposal_e8s: 10_000_000n, httpOutcall_e8s: 10_000_000n }; // defaults, loaded from backend
+  // DEFAULT FEES (Fetch Proposal requires 0.2 ICP = 20_000_000 e8s)
+  fees = { fetchProposal_e8s: 20_000_000n, httpOutcall_e8s: 0n }; // defaults, loaded from backend
 
   // Deposit/account state
   depositOwner = null; // canister principal (string)
@@ -224,6 +228,7 @@ class App {
   isFetching = false;
   isVerifyingArgs = false;
   cycleBalance = null;
+  lastFetchCyclesBurned = null;
 
   expectedHash = null; // expected wasm/release hash (from sources)
   expectedHashSource = null;
@@ -330,6 +335,7 @@ class App {
     this.depositCreditedTotal = 0;
     this.depositAvailableToCredit = 0;
 
+    this.lastFetchCyclesBurned = null;
     // Also clear the cached owner blob used by utils.principalToAccountIdentifier
     try {
       // eslint-disable-next-line no-undef
@@ -369,12 +375,12 @@ class App {
   async #loadFees() {
     try {
       const f = await this.backend.getFees();
-      const MIN_FEE_E8S = 10_000_000n; // 0.1 ICP
-      const fetch = f?.fetchProposal_e8s ?? MIN_FEE_E8S;
-      const outcall = f?.httpOutcall_e8s ?? MIN_FEE_E8S;
+      const MIN_FETCH_FEE_E8S = 20_000_000n; // 0.2 ICP
+      const fetch = f?.fetchProposal_e8s ?? MIN_FETCH_FEE_E8S;
+      const outcall = f?.httpOutcall_e8s ?? 0n;
       this.fees = {
-        fetchProposal_e8s: fetch < MIN_FEE_E8S ? MIN_FEE_E8S : fetch,
-        httpOutcall_e8s: outcall < MIN_FEE_E8S ? MIN_FEE_E8S : outcall,
+        fetchProposal_e8s: fetch < MIN_FETCH_FEE_E8S ? MIN_FETCH_FEE_E8S : fetch,
+        httpOutcall_e8s: outcall > 0n ? outcall : 0n,
       };
     } catch {
       // keep defaults
@@ -603,19 +609,27 @@ class App {
     const idEl = document.getElementById('proposalId');
     const id = parseInt(idEl.value);
 
-    const fetchFee = Number(this.fees?.fetchProposal_e8s ?? 0n) / 1e8;
-    const outcallFee = Number(this.fees?.httpOutcall_e8s ?? 0n) / 1e8;
+    const fetchFeeE8s = Number(this.fees?.fetchProposal_e8s ?? 0n);
+    const fetchFee = fetchFeeE8s / 1e8;
     const formattedFetchFee = fetchFee.toFixed(fetchFee >= 1 ? 2 : 1);
-    const formattedOutcallFee = outcallFee.toFixed(outcallFee >= 1 ? 2 : 1);
+    const requiredE8s = fetchFeeE8s + NETWORK_FEE_E8S;
+    if (this.userBalance < requiredE8s) {
+      const requiredIcp = (requiredE8s / 1e8).toFixed(4);
+      alert(
+        `Insufficient deposit balance. You need at least ${requiredIcp} ICP (including the 0.0001 ICP network fee) available before fetching a proposal.\n\nFund your deposit address first.`,
+      );
+      return;
+    }
     const depositAddressMessage = this.depositAccountIdentifierHex
       ? `\n\nDeposit address:\n${this.depositAccountIdentifierHex}`
       : '';
 
     const confirmed = window.confirm(
-      `Fetching this proposal will charge ${formattedFetchFee} ICP for the fetch and ${formattedOutcallFee} ICP for any HTTP outcalls from your deposit balance. You must fund your deposit address before continuing.${depositAddressMessage}\n\nDo you want to continue?`,
+      `Fetching this proposal will charge ${formattedFetchFee} ICP from your deposit balance (plus the 0.0001 ICP network fee). The fee is forwarded to account identifier ${BENEFICIARY_ACCOUNT_IDENTIFIER}. You must fund your deposit address before continuing.${depositAddressMessage}\n\nDo you want to continue?`,
     );
     if (!confirmed) return;
 
+    this.lastFetchCyclesBurned = null;
     this.#setFetching(true);
 
     try {
@@ -686,7 +700,7 @@ class App {
 
       await this.#prefillFromIcApi(id);
 
-      // Commit check (billed): backend first, then browser fallback
+      // Commit check: backend first, then browser fallback
       this.commitStatus = '';
       const repo = this.proposalData.extractedRepo || 'dfinity/ic';
       const commit = this.proposalData.extractedCommit || '';
@@ -728,6 +742,17 @@ class App {
       await this.#refreshBalance();
       await this.#loadDepositStatus();
 
+      if (typeof this.backend.getLastFetchCyclesBurned === 'function') {
+        try {
+          const burned = await this.backend.getLastFetchCyclesBurned();
+          this.lastFetchCyclesBurned = burned;
+        } catch (cyclesErr) {
+          this.lastFetchCyclesBurned = cyclesErr?.message || 'Unavailable';
+        }
+      } else {
+        this.lastFetchCyclesBurned = 'N/A';
+      }
+
       this.#updateChecklist();
     } catch (err) {
       alert(err?.message || String(err));
@@ -756,7 +781,7 @@ class App {
   async #handleFetchVerifyDoc() {
     if (!this.identity) {
       alert(
-        'Login required to use canister fetch (billed). You can still use browser-only fallback for CORS-safe text URLs.',
+        'Login required to use canister fetch. You can still use browser-only fallback for CORS-safe text URLs.',
       );
       // continue; we'll try backend first then fallback
     }
@@ -780,7 +805,7 @@ class App {
         } else {
           this.docPreview = `${contentType || 'binary'} (${bodyArray.length} bytes)`;
         }
-        // reflect billed outcall + update deposit status
+        // stay in sync with canister-side balance state
         await this.#refreshBalance();
         await this.#loadDepositStatus();
       } else {
@@ -853,6 +878,31 @@ class App {
       this.cycleBalance = 'Error: ' + (err.message || String(err));
     }
     this.#render();
+  }
+
+  #formatCyclesDisplay(value) {
+    if (value === null || value === undefined) return 'N/A';
+    try {
+      const big =
+        typeof value === 'bigint'
+          ? value
+          : typeof value === 'number'
+          ? BigInt(Math.round(value))
+          : BigInt(String(value));
+      const formatted = big
+        .toString()
+        .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      let approx = '';
+      const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+      if (big >= 1_000_000_000_000n && big <= maxSafe) {
+        const trillions = Number(big) / 1e12;
+        const digits = trillions >= 10 ? 1 : 3;
+        approx = ` (~${trillions.toFixed(digits)} T cycles)`;
+      }
+      return `${formatted}${approx}`;
+    } catch (err) {
+      return typeof value === 'string' ? value : String(value);
+    }
   }
 
   // --- rendering helpers ---
@@ -1437,11 +1487,14 @@ ${linuxVerify}</pre>
                     <b>Balance</b>: ${(this.userBalance / 1e8).toFixed(8)} ICP
                   </div>
                   <div style="font-size:12px;">
-                    <b>Fees</b>:
-                    fetch=${Number(this.fees.fetchProposal_e8s) / 1e8} ICP, outcall=${
-                      Number(this.fees.httpOutcall_e8s) / 1e8
-                    } ICP
-                    <em>(+ 0.0001 ICP network fee each)</em>
+                    <b>Fees</b>: Fetch Proposal = ${
+                      (Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(1)
+                    }
+                    ICP <em>(+ 0.0001 ICP network fee)</em>
+                  </div>
+                  <div style="font-size:12px;">
+                    <b>Last fetch cycles burned</b>:
+                    ${this.#formatCyclesDisplay(this.lastFetchCyclesBurned)}
                   </div>
                 </div>
                 <button class="btn secondary" @click=${() => this.#logout()}>
@@ -1487,6 +1540,11 @@ ${linuxVerify}</pre>
                 <p>
                   Send ICP to <b>your deposit address</b> below. Fees are deducted automatically
                   from this address when you run billed actions (e.g. <b>Fetch Proposal</b>).
+                </p>
+                <p>
+                  Each Fetch Proposal transfer moves <b>0.2 ICP</b> (plus the 0.0001 ICP network fee)
+                  to account identifier
+                  <code>${BENEFICIARY_ACCOUNT_IDENTIFIER}</code> to fund the canister's cycles.
                 </p>
 
                 <div class="deposit-highlight">
