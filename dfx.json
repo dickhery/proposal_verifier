@@ -4,7 +4,7 @@
       "main": "src/proposal_verifier_backend/main.mo",
       "type": "motoko",
       "settings": {
-        "reserved_cycles_limit": "20000000000000"
+        "reserved_cycles_limit": "30000000000000"
       }
     },
     "proposal_verifier_frontend": {
