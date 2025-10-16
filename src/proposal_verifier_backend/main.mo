@@ -351,6 +351,14 @@ persistent actor verifier {
     } else { #ok(()) };
   };
 
+  func saturatingSubNat64(a : Nat64, b : Nat64) : Nat64 {
+    if (a <= b) {
+      0;
+    } else {
+      Nat64.fromNat(Nat64.toNat(a) - Nat64.toNat(b));
+    };
+  };
+
   // Derive a deterministic 32-byte subaccount from the caller principal.
   func principalToSubaccount(p : Principal) : [Nat8] {
     let src = Blob.toArray(Principal.toBlob(p));
@@ -383,7 +391,19 @@ func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : asy
 
   // NEW: actually deduct the fee from the user's subaccount and forward it
   switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
-    case (#ok(())) { #ok(()) };
+    case (#ok(())) {
+      let totalDebited : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
+
+      let prevCredited = getCredited(caller);
+      let newCredited = saturatingSubNat64(prevCredited, totalDebited);
+      setCredited(caller, newCredited);
+
+      let prevInternal = getBalanceInternal(caller);
+      let newInternal = saturatingSubNat64(prevInternal, totalDebited);
+      setBalanceInternal(caller, newInternal);
+
+      #ok(());
+    };
     case (#err(msg)) { #err("Unable to collect fee for " # purpose # ": " # msg) };
   };
 };
