@@ -1,12 +1,21 @@
 /* src/proposal_verifier_frontend/src/index.scss */
+:root {
+  --bg: #f4f4f4;
+  --panel: #fff;
+  --text: #333;
+  --muted: #eee;
+  --border: #ddd;
+  --accent: #0a58ca;
+}
+
 body {
   font-family: sans-serif;
   font-size: 1.2rem;
-  background: #f4f4f4;
+  background: var(--bg);
   padding: 20px;
 }
 
-h1, h2 { color: #333; }
+h1, h2 { color: var(--text); }
 
 .topbar {
   display: flex;
@@ -25,8 +34,21 @@ h1, h2 { color: #333; }
   cursor: pointer;
 }
 .btn.secondary { background: #f1f1f1; }
-button.loading { opacity: 0.7; cursor: not-allowed; }
-button.linklike { border: none; background: none; color: #0a58ca; cursor: pointer; padding: 0; }
+
+/* Support both "button.loading" and ".btn.loading" */
+button.loading,
+.btn.loading {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+button.linklike {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
 
 form {
   display: flex;
@@ -39,19 +61,27 @@ input, button, textarea { padding: 8px; font-size: 1rem; }
 textarea { width: 100%; height: 100px; resize: vertical; }
 
 section {
-  background: white;
+  background: var(--panel);
   padding: 15px;
   margin: 10px 0;
   border-radius: 5px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
+/* Monospace for pre/code + better wrapping */
 pre {
-  background: #eee;
+  background: var(--muted);
   padding: 10px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+code {
+  background: var(--muted);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 ul { list-style: none; padding-left: 0; }
@@ -64,19 +94,34 @@ ul.links li { margin: 0.25rem 0; overflow-wrap: anywhere; }
 /* Doc list */
 ul.doc-list { margin: 0.5rem 0; }
 ul.doc-list li {
-  margin: 1rem 0; padding: 1rem; background: #f9f9f9;
-  border: 1px solid #ddd; border-radius: 4px;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 4px;
 }
 ul.doc-list li input[type="file"] { margin-top: 0.5rem; }
 
 /* Advisory */
-.advisory { border-left: 4px solid #f0ad4e; background: #fff8e6; }
+.advisory {
+  border-left: 4px solid #f0ad4e;
+  background: #fff8e6;
+}
+
+/* Details (for Advanced / FAQ / Guidance) */
+details { margin: 8px 0; }
+details summary { cursor: pointer; }
 
 /* FAQ details */
 details.faq { margin: 8px 0; }
 details.faq summary { cursor: pointer; }
 details.faq .qa { margin-top: 6px; }
-details.faq .helper { color: #444; background: #f7f7f7; padding: 8px; border-radius: 4px; }
+details.faq .helper {
+  color: #444;
+  background: #f7f7f7;
+  padding: 8px;
+  border-radius: 4px;
+}
 
 .qa { margin-top: 6px; }
 .qa strong { display: block; }
@@ -96,10 +141,11 @@ details.faq .helper { color: #444; background: #f7f7f7; padding: 8px; border-rad
 }
 
 .cmd-pre {
-  background: #eee;
+  background: var(--muted);
   padding: 8px;
   margin: 8px 0;
   border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 /* NEW: Steps list */
@@ -112,5 +158,10 @@ ol.steps-list li {
 }
 
 /* NEW: Type guidance details */
-details.type-guidance { margin: 12px 0; border: 1px solid #ddd; padding: 8px; border-radius: 4px; }
+details.type-guidance {
+  margin: 12px 0;
+  border: 1px solid #ddd;
+  padding: 8px;
+  border-radius: 4px;
+}
 details.type-guidance summary { font-weight: bold; }

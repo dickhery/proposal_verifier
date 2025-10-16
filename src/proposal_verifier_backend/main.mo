@@ -14,6 +14,7 @@ import Char "mo:base/Char";
 import Buffer "mo:base/Buffer";
 import Time "mo:base/Time";
 import Int32 "mo:base/Int32";
+import Debug "mo:base/Debug";
 
 persistent actor verifier {
 
@@ -361,24 +362,32 @@ persistent actor verifier {
   };
 
   // charge + forward (subtracts fee + transfer fee on success)
-  func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<(), Text> {
-    let bal = getBalanceInternal(caller);
-    let totalNeeded = fee_e8s + TRANSFER_FEE_E8S;
-    if (bal < totalNeeded) {
-      return #err(
-        "Insufficient balance for " # purpose #
-        ". Have " # Nat64.toText(bal) # " e8s, need " # Nat64.toText(totalNeeded) # " e8s (incl. transfer fee)."
-      );
-    };
-    let fromSub = principalToSubaccount(caller);
-    switch (await forwardFeeToBeneficiary(fromSub, fee_e8s)) {
-      case (#err(msg)) { #err(msg) };
-      case (#ok(())) {
-        setBalanceInternal(caller, bal - totalNeeded);
-        #ok(());
-      };
-    };
+func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<(), Text> {
+  let owner = Principal.fromActor(verifier);
+  let sub = principalToSubaccount(caller);
+
+  // Query live balance on the user's deposit subaccount (owner = this canister)
+  let ledgerBalNat = await ICP_LEDGER.icrc1_balance_of({
+    owner = owner;
+    subaccount = ?sub;
+  });
+
+  let totalNeeded : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
+
+  if (ledgerBalNat < Nat64.toNat(totalNeeded)) {
+    return #err(
+      "Insufficient balance for " # purpose #
+      ". On-chain subaccount has " # Nat.toText(ledgerBalNat) # " e8s, need " # Nat64.toText(totalNeeded) # " e8s (incl. network fee)."
+    );
   };
+
+  // NEW: actually deduct the fee from the user's subaccount and forward it
+  switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
+    case (#ok(())) { #ok(()) };
+    case (#err(msg)) { #err("Unable to collect fee for " # purpose # ": " # msg) };
+  };
+};
+
 
   // Public helpers for the UI:
   // - where to deposit (owner = this canister principal, subaccount = user-specific)
@@ -393,12 +402,7 @@ persistent actor verifier {
   };
 
   // -------- NEW: Auto-credit based on on-chain subaccount balance (no amount field) --------
-  public shared ({ caller }) func recordDepositAuto() : async Result.Result<{
-    credited_delta_e8s : Nat64;
-    total_internal_balance_e8s : Nat64;
-    ledger_balance_e8s : Nat;
-    credited_total_e8s : Nat64;
-  }, Text> {
+  public shared ({ caller }) func recordDepositAuto() : async Result.Result<{ credited_delta_e8s : Nat64; total_internal_balance_e8s : Nat64; ledger_balance_e8s : Nat; credited_total_e8s : Nat64 }, Text> {
     switch (requireAuth(caller)) {
       case (#err(e)) return #err(e);
       case (#ok(())) {};
@@ -408,7 +412,10 @@ persistent actor verifier {
     let sub = principalToSubaccount(caller);
 
     try {
-      let balNat : Nat = await ICP_LEDGER.icrc1_balance_of({ owner = owner; subaccount = ?sub });
+      let balNat : Nat = await ICP_LEDGER.icrc1_balance_of({
+        owner = owner;
+        subaccount = ?sub;
+      });
       let prevCredited : Nat64 = getCredited(caller);
 
       if (balNat <= Nat64.toNat(prevCredited)) {
@@ -447,11 +454,16 @@ persistent actor verifier {
     var ledgerBal : Nat = 0;
     // best-effort; if query fails, leave 0
     try {
-      ledgerBal := await ICP_LEDGER.icrc1_balance_of({ owner = owner; subaccount = ?sub });
+      ledgerBal := await ICP_LEDGER.icrc1_balance_of({
+        owner = owner;
+        subaccount = ?sub;
+      });
     } catch (e) {};
 
     let credited = getCredited(caller);
-    let available : Nat = if (ledgerBal > Nat64.toNat(credited)) { ledgerBal - Nat64.toNat(credited) } else { 0 };
+    let available : Nat = if (ledgerBal > Nat64.toNat(credited)) {
+      ledgerBal - Nat64.toNat(credited);
+    } else { 0 };
 
     {
       owner = owner;
@@ -459,7 +471,7 @@ persistent actor verifier {
       ledger_balance_e8s = ledgerBal;
       credited_total_e8s = credited;
       available_to_credit_e8s = available;
-    }
+    };
   };
 
   // Trustless credit of balance after a user transfers ICP to the above account.
@@ -515,8 +527,18 @@ persistent actor verifier {
     };
   };
 
-  public query ({ caller }) func getBalance() : async Nat64 {
-    getBalanceInternal(caller);
+  public shared ({ caller }) func getBalance() : async Nat64 {
+    let owner = Principal.fromActor(verifier);
+    let sub = principalToSubaccount(caller);
+    try {
+      let balNat : Nat = await ICP_LEDGER.icrc1_balance_of({
+        owner = owner;
+        subaccount = ?sub;
+      });
+      Nat64.fromNat(balNat);
+    } catch (e) {
+      0;
+    };
   };
 
   public query func getFees() : async {

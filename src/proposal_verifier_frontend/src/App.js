@@ -41,6 +41,44 @@ const RELEASE_URL_RE =
 const CANDID_PATTERN =
   /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
 
+// Add type-specific checklists (keys map to this.checklist fields)
+const TYPE_CHECKLISTS = new Map([
+  [
+    'ProtocolCanisterManagement',
+    [
+      { label: 'Fetch Proposal', key: 'fetch' },
+      { label: 'Commit Check', key: 'commit' },
+      { label: 'Expected WASM Hash Present', key: 'expected' },
+      { label: 'Arg Hash Verified', key: 'argsHash' },
+      { label: 'WASM Rebuilt & Hash Matched', key: 'rebuild' },
+    ],
+  ],
+  [
+    'IcOsVersionDeployment',
+    [
+      { label: 'Fetch Proposal', key: 'fetch' },
+      { label: 'Expected Release Hash Present', key: 'expected' },
+      { label: 'Commit Check (if provided)', key: 'commit' },
+      { label: 'Release Package Hash Verified', key: 'docHash' },
+    ],
+  ],
+  [
+    'ParticipantManagement',
+    [
+      { label: 'Fetch Proposal', key: 'fetch' },
+      { label: 'All PDFs Hash-Matched', key: 'docHash' },
+      { label: 'Forum/Wiki Context Checked', key: 'manual' },
+    ],
+  ],
+  [
+    'Governance',
+    [
+      { label: 'Fetch Proposal', key: 'fetch' },
+      { label: 'Manual Policy Review', key: 'manual' },
+    ],
+  ],
+]);
+
 // Find a 64-hex near helpful markers
 function extractHexFromTextAroundMarkers(
   text,
@@ -170,9 +208,9 @@ class App {
   depositSubaccountHex = null; // subaccount (hex)
   depositAccountIdentifierHex = null; // legacy 32-byte address (64 hex)
   // NEW: live balances and auto-credit tracking
-  depositLedgerBalance = 0;         // Nat (as JS number for display)
-  depositCreditedTotal = 0;         // Nat64-ish (display)
-  depositAvailableToCredit = 0;     // Nat delta (display)
+  depositLedgerBalance = 0; // Nat (as JS number for display)
+  depositCreditedTotal = 0; // Nat64-ish (display)
+  depositAvailableToCredit = 0; // Nat delta (display)
 
   // --- app state ---
   proposalData = null;
@@ -207,6 +245,9 @@ class App {
   requiredTools = null;
   typeChecklists = new Map();
 
+  // New: interactive type-specific items (checkbox UI)
+  typeChecklistItems = [];
+
   checklist = {
     fetch: false,
     commit: false,
@@ -214,7 +255,13 @@ class App {
     docHash: false,
     expected: false,
     rebuild: false,
+    manual: false, // for types that require manual review
   };
+
+  // URL/text fetch verification
+  docHashMatch = undefined;
+  docHashError = '';
+  docPreview = '';
 
   constructor() {
     this.#initAuth();
@@ -415,6 +462,7 @@ class App {
       docHash: this.docResults.every((r) => r.match),
       expected: !!this.expectedHash,
       rebuild: this.checklist.rebuild || false,
+      manual: this.checklist.manual || false,
     };
     this.#updateTypeChecklist();
   }
@@ -560,10 +608,14 @@ class App {
         this.argInputType = 'candid';
         this.argInputHint =
           'Detected Candid-like text. Encode with didc (or use the quick buttons), then paste the hex under "Hex Bytes".';
-      } else if (this.payloadSnippetFromDashboard && CANDID_PATTERN.test(this.payloadSnippetFromDashboard)) {
+      } else if (
+        this.payloadSnippetFromDashboard &&
+        CANDID_PATTERN.test(this.payloadSnippetFromDashboard)
+      ) {
         this.argInputCurrent = this.payloadSnippetFromDashboard.trim();
         this.argInputType = 'candid';
-        this.argInputHint = 'Detected possible Candid in payload snippet. Encode with didc before hashing.';
+        this.argInputHint =
+          'Detected possible Candid in payload snippet. Encode with didc before hashing.';
       } else {
         this.argInputCurrent = '';
       }
@@ -603,6 +655,10 @@ class App {
           error: '',
           preview: '',
         }));
+
+      // NEW: set interactive type checklist items
+      this.typeChecklistItems =
+        TYPE_CHECKLISTS.get(this.proposalData?.proposalType) || [];
 
       // Reflect billed deduction and refresh deposit status
       await this.#refreshBalance();
@@ -697,13 +753,19 @@ class App {
     const doc = this.proposalData.extractedDocs[docIndex];
     if (doc.hash == null) return;
     const expected = doc.hash || this.expectedHash || '';
-    this.docResults[docIndex] = { ...this.docResults[docIndex], error: '', preview: '', match: false };
+    this.docResults[docIndex] = {
+      ...this.docResults[docIndex],
+      error: '',
+      preview: '',
+      match: false,
+    };
     this.#render();
 
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const computedHash = await sha256(bytes);
-      const match = !!expected && this.#normalizeHex(computedHash) === this.#normalizeHex(expected);
+      const match =
+        !!expected && this.#normalizeHex(computedHash) === this.#normalizeHex(expected);
       const ct = file.type || 'binary';
       const preview = ct.startsWith('text/')
         ? new TextDecoder().decode(bytes).substring(0, 200) + '…'
@@ -751,7 +813,9 @@ class App {
 
     return html`
       <ul class="links">
-        ${links.map((u) => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`)}
+        ${links.map(
+          (u) => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`,
+        )}
       </ul>
     `;
   }
@@ -763,7 +827,9 @@ class App {
       const fname = `update-img-${idx + 1}.tar.zst`;
       return {
         url: u,
-        cmd: `curl -fsSL "${u}" -o ${fname}\nsha256sum ${fname}  # Linux (expect ${expected})\nshasum -a 256 ${fname}  # macOS (expect ${expected})`,
+        cmd: `curl -fsSL "${u}" -o ${fname}
+sha256sum ${fname}  # Linux (expect ${expected})
+shasum -a 256 ${fname}  # macOS (expect ${expected})`,
       };
     });
     return html`
@@ -805,7 +871,7 @@ class App {
             <summary><b>Guidance for IC-OS Elections</b></summary>
             <p>
               Download release package (.tar.zst) using curl commands above. Hash locally with
-              <code>sha256sum</code> (Linux) or <code>shasum -a 256</code> (macOS). Compare to
+              <code>sha256sum</code> (Linux) or <code>shasum - a 256</code> (macOS). Compare to
               <code>release_package_sha256_hex</code>.
             </p>
           </details>
@@ -837,7 +903,8 @@ class App {
       this.argInputHint =
         'This looks like a Candid blob literal (likely the on-chain hash). You must hash the *argument bytes*, not the hash itself.';
     } else if (this.argInputType !== 'candid' && CANDID_PATTERN.test(v)) {
-      this.argInputHint = 'Looks like Candid. Choose "Candid Text" and encode with didc first (or use the quick buttons).';
+      this.argInputHint =
+        'Looks like Candid. Choose "Candid Text" and encode with didc first (or use the quick buttons).';
     } else if (/^vec\s*\{[\s\S]*\}$/i.test(v)) {
       this.argInputHint = 'Looks like a Candid vec nat8. Choose “vec nat8 list”.';
     } else if (looksLikeHexString(v)) {
@@ -883,7 +950,8 @@ class App {
         const hex = encodeUnitHex();
         this.argInputType = 'hex';
         this.argInputCurrent = hex;
-        this.argInputHint = 'Auto-encoded `()` with @dfinity/candid. These are the *argument bytes* in hex.';
+        this.argInputHint =
+          'Auto-encoded `()` with @dfinity/candid. These are the *argument bytes* in hex.';
         this.#render();
       } catch (e) {
         alert('Encoding failed: ' + (e?.message || String(e)));
@@ -903,8 +971,12 @@ class App {
       <details>
         <summary><b>Quick helpers</b></summary>
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin:8px 0;">
-          <button class="btn secondary" @click=${fillNull}>Arg is <code>(null)</code> (auto-encode)</button>
-          <button class="btn secondary" @click=${fillUnit}>Arg is <code>()</code> (auto-encode)</button>
+          <button class="btn secondary" @click=${fillNull}>
+            Arg is <code>(null)</code> (auto-encode)
+          </button>
+          <button class="btn secondary" @click=${fillUnit}>
+            Arg is <code>()</code> (auto-encode)
+          </button>
         </div>
 
         ${hasRecommended
@@ -945,7 +1017,9 @@ ${linuxVerify}</pre>
 
     const argsRaw = (this.argInputCurrent || '').trim();
     const inputExpected =
-      (document.getElementById('expectedArgHash')?.value || '').trim() || this.argHash || '';
+      (document.getElementById('expectedArgHash')?.value || '').trim() ||
+      this.argHash ||
+      '';
 
     try {
       if (!inputExpected) {
@@ -961,7 +1035,10 @@ ${linuxVerify}</pre>
 
       switch (this.argInputType) {
         case 'hex': {
-          if (!argsRaw) throw new Error('Paste hex bytes (from `didc encode` or the auto-encode buttons).');
+          if (!argsRaw)
+            throw new Error(
+              'Paste hex bytes (from `didc encode` or the auto-encode buttons).',
+            );
           // Try to auto-fix if double-hex
           const maybe = tryDecodeDoubleHex(argsRaw);
           bytes = maybe || hexToBytes(argsRaw);
@@ -1054,26 +1131,31 @@ ${linuxVerify}</pre>
           <summary>How to choose an input</summary>
           <ol>
             <li>
-              <b>Hex Bytes:</b> Paste the bytes as hex (<i>direct output</i> of <code>didc encode</code> or use the
-              auto-encode buttons). We hash <b>bytes</b>.
+              <b>Hex Bytes:</b> Paste the bytes as hex (<i>direct output</i> of
+              <code>didc encode</code> or use the auto-encode buttons). We hash <b>bytes</b>.
             </li>
             <li>
-              <b>vec nat8 list:</b> Paste a Candid list like <code>vec {1; 2; 0xFF}</code>. We parse to bytes and hash.
+              <b>vec nat8 list:</b> Paste a Candid list like <code>vec {1; 2; 0xFF}</code>. We
+              parse to bytes and hash.
             </li>
             <li>
-              <b>blob "…":</b> Paste a Candid <code>blob</code> literal with <code>\\xx</code> escapes.
+              <b>blob "…":</b> Paste a Candid <code>blob</code> literal with <code>\\xx</code>
+              escapes.
             </li>
             <li>
-              <b>Candid Text:</b> Paste human-readable Candid (e.g. <code>(null)</code> or <code>()</code>)
-              <i>to build hex</i>. Run the command below or click the quick buttons, then paste the resulting <b>hex</b>
-              under <b>Hex Bytes</b>.
+              <b>Candid Text:</b> Paste human-readable Candid (e.g. <code>(null)</code> or
+              <code>()</code>) <i>to build hex</i>. Run the command below or click the quick
+              buttons, then paste the resulting <b>hex</b> under <b>Hex Bytes</b>.
             </li>
           </ol>
 
           <p><b>didc hex builder (copy/paste into the "Hex Bytes" box):</b></p>
           <pre class="cmd-pre">${didcCmd}</pre>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="btn secondary" @click=${(e) => this.#handleCopy(e, didcCmd, 'Copy didc Command')}>
+            <button
+              class="btn secondary"
+              @click=${(e) => this.#handleCopy(e, didcCmd, 'Copy didc Command')}
+            >
               Copy didc Command
             </button>
             <a
@@ -1086,9 +1168,9 @@ ${linuxVerify}</pre>
           </div>
 
           <p style="margin-top:6px;">
-            <b>Important:</b> <code>didc encode</code> outputs <i>hex text</i>. To verify the on-chain
-            <code>arg_hash</code>, hash the <b>bytes</b> by converting that hex back to bytes (<code>xxd -r -p</code>)
-            before hashing.
+            <b>Important:</b> <code>didc encode</code> outputs <i>hex text</i>. To verify the
+            on-chain <code>arg_hash</code>, hash the <b>bytes</b> by converting that hex back to
+            bytes (<code>xxd -r -p</code>) before hashing.
           </p>
         </details>
 
@@ -1151,7 +1233,9 @@ ${linuxVerify}</pre>
           @input=${(e) => this.#handleArgInputChange(e)}
         >${this.argInputCurrent}</textarea>
 
-        ${this.argInputHint ? html`<p style="margin:6px 0 0;"><em>${this.argInputHint}</em></p>` : ''}
+        ${this.argInputHint
+          ? html`<p style="margin:6px 0 0;"><em>${this.argInputHint}</em></p>`
+          : ''}
 
         <input
           id="expectedArgHash"
@@ -1184,7 +1268,7 @@ ${linuxVerify}</pre>
     `;
   }
 
-  // --- Type-specific checklist rendering ---
+  // --- Type-specific checklist rendering (computed view) ---
 
   #renderTypeChecklist() {
     const items =
@@ -1240,19 +1324,19 @@ ${linuxVerify}</pre>
         items = [
           { label: 'Fetch Proposal', checked: this.checklist.fetch },
           { label: 'All PDFs Hash-Matched', checked: this.checklist.docHash },
-          { label: 'Forum/Wiki Context Checked', checked: false },
+          { label: 'Forum/Wiki Context Checked', checked: this.checklist.manual },
         ];
         break;
       case 'Governance':
         items = [
           { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'Manual Policy Review', checked: false },
+          { label: 'Manual Policy Review', checked: this.checklist.manual },
         ];
         break;
       default:
         items = [
           { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'Manual Review', checked: false },
+          { label: 'Manual Review', checked: this.checklist.manual },
         ];
     }
     this.typeChecklists.set(type, items);
@@ -1262,7 +1346,12 @@ ${linuxVerify}</pre>
 
   #render() {
     if (this.view === 'faq') {
-      const body = FAQView({ onBack: () => { this.view = 'home'; this.#render(); } });
+      const body = FAQView({
+        onBack: () => {
+          this.view = 'home';
+          this.#render();
+        },
+      });
       return render(body, document.getElementById('root'));
     }
 
@@ -1277,21 +1366,52 @@ ${linuxVerify}</pre>
           ${this.identity
             ? html`
                 <div style="text-align:right;">
-                  <div style="font-size:12px;"><b>User</b>: <code>${this.userPrincipal}</code></div>
-                  <div style="font-size:12px;"><b>Balance</b>: ${(this.userBalance / 1e8).toFixed(8)} ICP</div>
+                  <div style="font-size:12px;">
+                    <b>User</b>: <code>${this.userPrincipal}</code>
+                  </div>
+                  <div style="font-size:12px;">
+                    <b>Balance</b>: ${(this.userBalance / 1e8).toFixed(8)} ICP
+                  </div>
                   <div style="font-size:12px;">
                     <b>Fees</b>:
-                    fetch=${Number(this.fees.fetchProposal_e8s) / 1e8} ICP,
-                    outcall=${Number(this.fees.httpOutcall_e8s) / 1e8} ICP
+                    fetch=${Number(this.fees.fetchProposal_e8s) / 1e8} ICP, outcall=${
+                      Number(this.fees.httpOutcall_e8s) / 1e8
+                    } ICP
                     <em>(+ 0.0001 ICP network fee each)</em>
                   </div>
                 </div>
-                <button class="btn secondary" @click=${() => this.#logout()}>Logout</button>
+                <button class="btn secondary" @click=${() => this.#logout()}>
+                  Logout
+                </button>
               `
-            : html` <button class="btn" @click=${() => this.#login()}>Login with Internet Identity</button> `}
+            : html`
+                <button class="btn" @click=${() => this.#login()}>
+                  Login with Internet Identity
+                </button>
+              `}
           ${this.view === 'home'
-            ? html`<button class="btn" @click=${() => { this.view = 'faq'; this.#render(); }}>Open FAQ</button>`
-            : html`<button class="btn" @click=${() => { this.view = 'home'; this.#render(); }}>&larr; Back</button>`}
+            ? html`
+                <button
+                  class="btn"
+                  @click=${() => {
+                    this.view = 'faq';
+                    this.#render();
+                  }}
+                >
+                  Open FAQ
+                </button>
+              `
+            : html`
+                <button
+                  class="btn"
+                  @click=${() => {
+                    this.view = 'home';
+                    this.#render();
+                  }}
+                >
+                  &larr; Back
+                </button>
+              `}
         </div>
       </nav>
 
@@ -1301,8 +1421,8 @@ ${linuxVerify}</pre>
               <details open>
                 <summary><b>Fund your balance</b></summary>
                 <p>
-                  Send ICP to <b>your deposit address</b> below, then click
-                  <i>Record new deposits</i>. We’ll auto-credit everything detected on-chain.
+                  Send ICP to <b>your deposit address</b> below. Fees are deducted automatically
+                  from this address when you run billed actions (e.g. <b>Fetch Proposal</b>).
                 </p>
 
                 <ul>
@@ -1313,41 +1433,89 @@ ${linuxVerify}</pre>
                     <b>Deposit Address (Account Identifier):</b><br />
                     ${this.depositAccountIdentifierHex
                       ? html`<code>${this.depositAccountIdentifierHex}</code>
-                          <button class="btn secondary"
-                            @click=${(e)=>this.#handleCopy(e, this.depositAccountIdentifierHex, 'Copy Address')}>
+                          <button
+                            class="btn secondary"
+                            @click=${(e) =>
+                              this.#handleCopy(
+                                e,
+                                this.depositAccountIdentifierHex,
+                                'Copy Address',
+                              )}
+                          >
                             Copy
                           </button>`
                       : '(calculating…)'}
                   </li>
-                  <li><b>Owner (canister principal):</b> <code>${this.depositOwner ?? '(loading...)'}</code></li>
-                  <li><b>Your subaccount (hex):</b> <code>${this.depositSubaccountHex ?? '(loading...)'}</code></li>
                 </ul>
 
                 <details>
-                  <summary>How to send</summary>
-                  <p><b>Most wallets (incl. NNS):</b> paste the <i>Deposit Address</i> above into the "To" field and send ICP.</p>
-                  <p><b>Wallets with principal + subaccount:</b> send to the canister principal above and paste your subaccount hex under “Advanced”.</p>
-                  <p><b>CLI (dfx):</b></p>
-                  <pre class="cmd-pre">dfx ledger transfer ${this.depositAccountIdentifierHex || '<ADDRESS>'} --icp 0.5 --memo 0</pre>
+                  <summary><b>Advanced (principal + subaccount)</b></summary>
+                  <ul>
+                    <li>
+                      <b>Owner (canister principal):</b>
+                      <code>${this.depositOwner ?? '(loading...)'}</code>
+                    </li>
+                    <li>
+                      <b>Your subaccount (hex):</b>
+                      <code>${this.depositSubaccountHex ?? '(loading...)'}</code>
+                      <br /><small
+                        >(Only for wallets that support “send to principal + subaccount”.)</small
+                      >
+                    </li>
+                  </ul>
                 </details>
 
-                <p style="margin-top:6px;">
-                  <small>
-                    You are only charged when you run a billed action (e.g. <b>Fetch Proposal</b> or a canister HTTP fetch).
-                    We forward the fee from your deposit subaccount and also deduct it from your in-app balance.
-                  </small>
-                </p>
+                <details>
+                  <summary>How to send</summary>
+                  <p>
+                    <b>Most wallets (incl. NNS):</b> paste the <i>Deposit Address</i> above into the
+                    “To” field and send ICP.
+                  </p>
+                  <p>
+                    <b>Wallets with principal + subaccount:</b> send to the canister principal under
+                    <b>Advanced</b>, and paste your subaccount hex under “Advanced”.
+                  </p>
+                  <p><b>CLI (dfx):</b></p>
+                  <pre class="cmd-pre">dfx ledger transfer ${this.depositAccountIdentifierHex ||
+                  '<ADDRESS>'} --icp 0.5 --memo 0</pre>
+                </details>
 
                 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-                  <button class="btn secondary" @click=${() => this.#loadDepositStatus()}>Refresh balances</button>
-                  <button class="btn secondary" @click=${() => this.#recordAllDeposits()}>Record new deposits</button>
+                  <button
+                    class="btn secondary"
+                    @click=${() => {
+                      this.#loadDepositStatus();
+                      this.#refreshBalance();
+                    }}
+                  >
+                    Refresh balances
+                  </button>
+                  ${this.depositAvailableToCredit > 0
+                    ? html`
+                        <button class="btn" @click=${() => this.#recordAllDeposits()}>
+                          Credit Now
+                        </button>
+                      `
+                    : ''}
                 </div>
 
                 <div style="margin-top:8px;">
-                  <b>On-chain (deposit subaccount):</b>
-                  ${(this.depositLedgerBalance/1e8).toFixed(8)} ICP &nbsp;|&nbsp;
-                  <b>Already credited:</b> ${(this.depositCreditedTotal/1e8).toFixed(8)} ICP &nbsp;|&nbsp;
-                  <b>Available to credit:</b> ${(this.depositAvailableToCredit/1e8).toFixed(8)} ICP
+                  <div>
+                    <b>On-chain (deposit subaccount):</b>
+                    ${(this.depositLedgerBalance / 1e8).toFixed(8)} ICP
+                  </div>
+                  <div>
+                    <b>Credited to app:</b>
+                    ${(this.depositCreditedTotal / 1e8).toFixed(8)} ICP
+                  </div>
+                  <div>
+                    <b>Available to credit:</b>
+                    ${(this.depositAvailableToCredit / 1e8).toFixed(8)} ICP
+                    ${this.depositAvailableToCredit > 0
+                      ? html`<small style="margin-left:6px;">(click
+                            <b>Credit Now</b> to add)</small>`
+                      : ''}
+                  </div>
                 </div>
               </details>
             </section>
@@ -1368,7 +1536,14 @@ ${linuxVerify}</pre>
           <button type="submit" class=${loading ? 'loading btn' : 'btn'} ?disabled=${loading}>
             ${loading ? 'Fetching…' : 'Fetch Proposal'}
           </button>
-          <button type="button" class="btn secondary" @click=${() => { this.view = 'faq'; this.#render(); }}>
+          <button
+            type="button"
+            class="btn secondary"
+            @click=${() => {
+              this.view = 'faq';
+              this.#render();
+            }}
+          >
             Open FAQ
           </button>
         </form>
@@ -1382,13 +1557,21 @@ ${linuxVerify}</pre>
                 <p><b>Title:</b> ${p.title || '(none)'} </p>
                 <p><b>Summary (raw):</b></p>
                 <pre>${p.summary}</pre>
-                <button class="btn" @click=${(e) => this.#handleCopy(e, p.summary, 'Copy Summary')}>Copy Summary</button>
+                <button class="btn" @click=${(e) => this.#handleCopy(e, p.summary, 'Copy Summary')}>
+                  Copy Summary
+                </button>
 
                 <p><b>Extracted Repo:</b> ${p.extractedRepo ?? 'None'}</p>
-                <p><b>Extracted Commit:</b>
+                <p>
+                  <b>Extracted Commit:</b>
                   ${p.extractedCommit
                     ? p.commitUrl
-                      ? html`<a href="${p.commitUrl}" target="_blank" rel="noreferrer">${p.extractedCommit}</a>`
+                      ? html`<a
+                          href="${p.commitUrl}"
+                          target="_blank"
+                          rel="noreferrer"
+                          >${p.extractedCommit}</a
+                        >`
                       : p.extractedCommit
                     : 'None'}
                 </p>
@@ -1397,26 +1580,48 @@ ${linuxVerify}</pre>
                 <p><b>Onchain Arg Hash:</b> ${p.proposal_arg_hash ?? 'None'}</p>
 
                 <p>
-                  <b>Expected WASM/Release Hash (from Sources):</b> ${this.expectedHash ?? 'None'}
-                  ${this.expectedHash ? html`<em>(source: ${this.expectedHashSource || 'unknown'})</em>` : ''}
+                  <b>Expected WASM/Release Hash (from Sources):</b>
+                  ${this.expectedHash ?? 'None'}
+                  ${this.expectedHash
+                    ? html`<em>(source: ${this.expectedHashSource || 'unknown'})</em>`
+                    : ''}
                 </p>
 
                 <p><b>Arg Hash (from Dashboard/API):</b> ${this.argHash ?? 'None'}</p>
 
-                <p><b>Extracted Doc URL:</b>
+                <p>
+                  <b>Extracted Doc URL:</b>
                   ${p.extractedDocUrl
-                    ? html`<a href="${p.extractedDocUrl}" target="_blank" rel="noreferrer">${p.extractedDocUrl}</a>`
+                    ? html`<a
+                        href="${p.extractedDocUrl}"
+                        target="_blank"
+                        rel="noreferrer"
+                        >${p.extractedDocUrl}</a
+                      >`
                     : 'None'}
                 </p>
                 <p><b>Artifact Path Hint:</b> ${p.extractedArtifact ?? 'None'}</p>
 
-                <p><b>Commit Status:</b>
+                <p>
+                  <b>Commit Status:</b>
                   ${this.commitStatus}
-                  ${p.commitUrl ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer">open</a>)` : ''}
+                  ${p.commitUrl
+                    ? html`&nbsp;(<a
+                          href="${p.commitUrl}"
+                          target="_blank"
+                          rel="noreferrer"
+                          >open</a
+                        >)`
+                    : ''}
                 </p>
 
                 ${this.dashboardUrl
-                  ? html`<p><b>Dashboard:</b> <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer">${this.dashboardUrl}</a></p>`
+                  ? html`<p>
+                      <b>Dashboard:</b>
+                      <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer"
+                        >${this.dashboardUrl}</a
+                      >
+                    </p>`
                   : ''}
               </section>
 
@@ -1425,28 +1630,36 @@ ${linuxVerify}</pre>
                 ${this.#renderLinks()}
               </section>
 
-              ${this.#renderReleaseCommands()} ${this.#renderTypeGuidance()} ${this.#renderArgSection(p)}
+              ${this.#renderReleaseCommands()} ${this.#renderTypeGuidance()}
+              ${this.#renderArgSection(p)}
 
               <section>
                 <h2>Verify Documents / Local Files</h2>
                 <details>
                   <summary>How to use</summary>
                   <p>
-                    For PDFs/WASMs/tar.zst: download from links (e.g., wiki/forum), upload below. Hashes must match the
-                    proposal summary or dashboard.
+                    For PDFs/WASMs/tar.zst: download from links (e.g., wiki/forum), upload below.
+                    Hashes must match the proposal summary or dashboard.
                   </p>
                 </details>
                 ${(() => {
-                  const docs = (this.proposalData?.extractedDocs || []).filter((d) => d.hash != null);
-                  if (!docs.length) return html`<p>No documents extracted. Paste URL or upload manually.</p>`;
+                  const docs = (this.proposalData?.extractedDocs || []).filter(
+                    (d) => d.hash != null,
+                  );
+                  if (!docs.length)
+                    return html`<p>No documents extracted. Paste URL or upload manually.</p>`;
                   return html`
                     <ul class="doc-list">
                       ${docs.map((d, idx) => {
-                        const res = this.docResults[idx] || { match: false, error: '', preview: '' };
+                        const res =
+                          this.docResults[idx] || { match: false, error: '', preview: '' };
                         return html`
                           <li>
                             <b>${d.name}</b> (expected: ${d.hash || 'none'})
-                            <input type="file" @change=${(e) => this.#handleFileUpload(e, idx)} />
+                            <input
+                              type="file"
+                              @change=${(e) => this.#handleFileUpload(e, idx)}
+                            />
                             <p><b>Match:</b> ${res.match ? '✅ Yes' : '❌ No'}</p>
                             ${res.error ? html`<p class="error">${res.error}</p>` : ''}
                             <p><b>Preview:</b> ${res.preview}</p>
@@ -1456,22 +1669,38 @@ ${linuxVerify}</pre>
                     </ul>
                   `;
                 })()}
-                <input id="docUrl" placeholder="Document URL (text/JSON only)" value=${p.extractedDocUrl ?? ''} />
-                <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
-                <button class="btn" @click=${() => this.#handleFetchVerifyDoc()}>Fetch & Verify URL (text only)</button>
-                ${this.docHashError ? html`<p class="error" style="margin-top:8px;">${this.docHashError}</p>` : ''}
+                <input
+                  id="docUrl"
+                  placeholder="Document URL (text/JSON only)"
+                  value=${p.extractedDocUrl ?? ''}
+                />
+                <input
+                  id="expectedDocHash"
+                  placeholder="Expected SHA-256"
+                  value=${this.expectedHash || ''}
+                />
+                <button class="btn" @click=${() => this.#handleFetchVerifyDoc()}>
+                  Fetch & Verify URL (text only)
+                </button>
+                ${this.docHashError
+                  ? html`<p class="error" style="margin-top:8px;">${this.docHashError}</p>`
+                  : ''}
                 ${typeof this.docHashMatch === 'boolean'
-                  ? html`<p><b>URL Hash Match:</b> ${this.docHashMatch ? '✅ Yes' : '❌ No'}</p>`
+                  ? html`<p>
+                      <b>URL Hash Match:</b> ${this.docHashMatch ? '✅ Yes' : '❌ No'}
+                    </p>`
                   : ''}
                 ${this.docPreview ? html`<p><b>Preview:</b> ${this.docPreview}</p>` : ''}
               </section>
 
               <section>
                 <h2>Payload (from Dashboard/API)</h2>
-                <pre>${this.payloadSnippetFromDashboard ?? '(no payload snippet found from ic-api)'}</pre>
+                <pre>${this.payloadSnippetFromDashboard ??
+                '(no payload snippet found from ic-api)'}</pre>
                 <button
                   class="btn"
-                  @click=${(e) => this.#handleCopy(e, this.payloadSnippetFromDashboard || '', 'Copy Payload')}
+                  @click=${(e) =>
+                    this.#handleCopy(e, this.payloadSnippetFromDashboard || '', 'Copy Payload')}
                 >
                   Copy Payload
                 </button>
@@ -1483,7 +1712,10 @@ ${linuxVerify}</pre>
                   ? html`<p><b>Artifact (expected):</b> ${p.extractedArtifact}</p>`
                   : ''}
                 <pre>${this.rebuildScript}</pre>
-                <button class="btn" @click=${(e) => this.#handleCopy(e, this.rebuildScript, 'Copy Script')}>
+                <button
+                  class="btn"
+                  @click=${(e) => this.#handleCopy(e, this.rebuildScript, 'Copy Script')}
+                >
                   Copy Script
                 </button>
                 <p>
@@ -1496,9 +1728,15 @@ ${linuxVerify}</pre>
                 <h2>Verification Steps for ${p.proposalType}</h2>
                 ${(() => {
                   const steps = (this.verificationSteps || '').trim();
-                  if (!steps) return html`<p>No type-specific steps available for this proposal.</p>`;
-                  const items = steps.split('\n').map((s) => s.trim()).filter(Boolean);
-                  return html`<ol class="steps-list">${items.map((s) => html`<li>${s}</li>`)}</ol>`;
+                  if (!steps)
+                    return html`<p>No type-specific steps available for this proposal.</p>`;
+                  const items = steps
+                    .split('\n')
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                  return html`<ol class="steps-list">
+                    ${items.map((s) => html`<li>${s}</li>`)}
+                  </ol>`;
                 })()}
               </section>
 
@@ -1506,6 +1744,31 @@ ${linuxVerify}</pre>
                 <h2>Required Tools</h2>
                 <pre>${this.requiredTools || 'No specific tools required for this type.'}</pre>
               </section>
+
+              ${this.typeChecklistItems.length
+                ? html`
+                    <section>
+                      <h2>Type-Specific Checklist (${p.proposalType})</h2>
+                      <ul>
+                        ${this.typeChecklistItems.map(
+                          (item) => html`<li>
+                            <label>
+                              <input
+                                type="checkbox"
+                                ?checked=${this.checklist[item.key] || false}
+                                @change=${(e) => {
+                                  this.checklist[item.key] = e.target.checked;
+                                  this.#render();
+                                }}
+                              />
+                              ${item.label}
+                            </label>
+                          </li>`,
+                        )}
+                      </ul>
+                    </section>
+                  `
+                : ''}
 
               <section>
                 <h2>Checklist</h2>
