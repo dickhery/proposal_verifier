@@ -108,6 +108,35 @@ ul.doc-list li input[type="file"] { margin-top: 0.5rem; }
   background: #fff8e6;
 }
 
+.deposit-highlight {
+  border: 1px solid #f0ad4e;
+  background: #fff3cd;
+  padding: 12px;
+  border-radius: 6px;
+  margin: 12px 0;
+}
+
+.deposit-highlight .label {
+  font-weight: bold;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  font-size: 0.9rem;
+}
+
+.deposit-highlight .address {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.deposit-highlight .note {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #6c5400;
+}
+
 /* Details (for Advanced / FAQ / Guidance) */
 details { margin: 8px 0; }
 details summary { cursor: pointer; }

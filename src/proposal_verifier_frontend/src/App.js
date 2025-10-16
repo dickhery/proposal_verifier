@@ -212,6 +212,7 @@ class App {
   depositLedgerBalance = 0; // Nat (as JS number for display)
   depositCreditedTotal = 0; // Nat64-ish (display)
   depositAvailableToCredit = 0; // Nat delta (display)
+  isAutoCrediting = false;
 
   // --- app state ---
   proposalData = null;
@@ -368,7 +369,13 @@ class App {
   async #loadFees() {
     try {
       const f = await this.backend.getFees();
-      this.fees = f;
+      const MIN_FEE_E8S = 10_000_000n; // 0.1 ICP
+      const fetch = f?.fetchProposal_e8s ?? MIN_FEE_E8S;
+      const outcall = f?.httpOutcall_e8s ?? MIN_FEE_E8S;
+      this.fees = {
+        fetchProposal_e8s: fetch < MIN_FEE_E8S ? MIN_FEE_E8S : fetch,
+        httpOutcall_e8s: outcall < MIN_FEE_E8S ? MIN_FEE_E8S : outcall,
+      };
     } catch {
       // keep defaults
     }
@@ -376,7 +383,7 @@ class App {
 
   // ----------------- deposit status (new) -----------------
 
-  async #loadDepositStatus() {
+  async #loadDepositStatus({ autoCredit = true, silentCredit = true } = {}) {
     try {
       const s = await this.backend.getDepositStatus();
       // owner + subaccount for address calculation
@@ -411,7 +418,11 @@ class App {
       this.depositCreditedTotal = 0;
       this.depositAvailableToCredit = 0;
     }
-    this.#render();
+    if (autoCredit && this.depositAvailableToCredit > 0) {
+      await this.#recordAllDeposits({ silent: silentCredit });
+    } else {
+      this.#render();
+    }
   }
 
   // Legacy: load only owner/subaccount if status helper not available
@@ -446,8 +457,13 @@ class App {
   }
 
   // Auto-credit whatever arrived on-chain (no amount field)
-  async #recordAllDeposits() {
-    if (!this.identity) return alert('Login required to record deposits.');
+  async #recordAllDeposits({ silent = false } = {}) {
+    if (!this.identity) {
+      if (!silent) alert('Login required to record deposits.');
+      return;
+    }
+    if (this.isAutoCrediting) return;
+    this.isAutoCrediting = true;
     try {
       const res = await this.backend.recordDepositAuto();
       if (res.ok !== undefined) {
@@ -459,16 +475,23 @@ class App {
           0,
           this.depositLedgerBalance - this.depositCreditedTotal,
         );
-        alert(
-          `Credited ${(Number(r.credited_delta_e8s) / 1e8).toFixed(8)} ICP from your ledger subaccount.`,
-        );
-      } else {
+        if (!silent) {
+          alert(
+            `Credited ${(Number(r.credited_delta_e8s) / 1e8).toFixed(
+              8,
+            )} ICP from your ledger subaccount.`,
+          );
+        }
+        await this.#refreshBalance();
+      } else if (!silent) {
         alert('Deposit error: ' + (res.err || 'unknown'));
       }
     } catch (e) {
-      alert('Deposit failed: ' + (e?.message || String(e)));
+      if (!silent) alert('Deposit failed: ' + (e?.message || String(e)));
+    } finally {
+      this.isAutoCrediting = false;
+      this.#render();
     }
-    this.#render();
   }
 
   // ----------------- helpers -----------------
@@ -576,12 +599,26 @@ class App {
       alert('Login required to fetch (billed action).');
       return;
     }
+
+    const idEl = document.getElementById('proposalId');
+    const id = parseInt(idEl.value);
+
+    const fetchFee = Number(this.fees?.fetchProposal_e8s ?? 0n) / 1e8;
+    const outcallFee = Number(this.fees?.httpOutcall_e8s ?? 0n) / 1e8;
+    const formattedFetchFee = fetchFee.toFixed(fetchFee >= 1 ? 2 : 1);
+    const formattedOutcallFee = outcallFee.toFixed(outcallFee >= 1 ? 2 : 1);
+    const depositAddressMessage = this.depositAccountIdentifierHex
+      ? `\n\nDeposit address:\n${this.depositAccountIdentifierHex}`
+      : '';
+
+    const confirmed = window.confirm(
+      `Fetching this proposal will charge ${formattedFetchFee} ICP for the fetch and ${formattedOutcallFee} ICP for any HTTP outcalls from your deposit balance. You must fund your deposit address before continuing.${depositAddressMessage}\n\nDo you want to continue?`,
+    );
+    if (!confirmed) return;
+
     this.#setFetching(true);
 
     try {
-      const idEl = document.getElementById('proposalId');
-      const id = parseInt(idEl.value);
-
       const aug = await this.backend.getProposalAugmented(BigInt(id));
       if (aug.err) throw new Error(aug.err || 'Unknown error from backend');
 
@@ -1452,12 +1489,9 @@ ${linuxVerify}</pre>
                   from this address when you run billed actions (e.g. <b>Fetch Proposal</b>).
                 </p>
 
-                <ul>
-                  <li>
-                    <b>Your PID (principal):</b> <code>${this.userPrincipal}</code>
-                  </li>
-                  <li>
-                    <b>Deposit Address (Account Identifier):</b><br />
+                <div class="deposit-highlight">
+                  <p class="label">Deposit Address (Account Identifier)</p>
+                  <p class="address">
                     ${this.depositAccountIdentifierHex
                       ? html`<code>${this.depositAccountIdentifierHex}</code>
                           <button
@@ -1472,6 +1506,20 @@ ${linuxVerify}</pre>
                             Copy
                           </button>`
                       : '(calculating…)'}
+                  </p>
+                  <p class="note">
+                    <b>Important:</b> This is the address that funds your Proposal Verifier account.
+                    Deposits to this address are automatically credited as soon as they are detected
+                    on-chain.
+                  </p>
+                </div>
+
+                <ul>
+                  <li>
+                    <b>Your PID (principal):</b> <code>${this.userPrincipal}</code>
+                  </li>
+                  <li>
+                    <b>Need it later?</b> You can always reopen this panel to copy the same address.
                   </li>
                 </ul>
 
@@ -1510,20 +1558,13 @@ ${linuxVerify}</pre>
                 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
                   <button
                     class="btn secondary"
-                    @click=${() => {
-                      this.#loadDepositStatus();
-                      this.#refreshBalance();
+                    @click=${async () => {
+                      await this.#loadDepositStatus({ autoCredit: true, silentCredit: false });
+                      await this.#refreshBalance();
                     }}
                   >
                     Refresh balances
                   </button>
-                  ${this.depositAvailableToCredit > 0
-                    ? html`
-                        <button class="btn" @click=${() => this.#recordAllDeposits()}>
-                          Credit Now
-                        </button>
-                      `
-                    : ''}
                 </div>
 
                 <div style="margin-top:8px;">
@@ -1538,10 +1579,7 @@ ${linuxVerify}</pre>
                   <div>
                     <b>Available to credit:</b>
                     ${(this.depositAvailableToCredit / 1e8).toFixed(8)} ICP
-                    ${this.depositAvailableToCredit > 0
-                      ? html`<small style="margin-left:6px;">(click
-                            <b>Credit Now</b> to add)</small>`
-                      : ''}
+                    <small style="margin-left:6px;">(auto-credited when detected)</small>
                   </div>
                 </div>
               </details>
