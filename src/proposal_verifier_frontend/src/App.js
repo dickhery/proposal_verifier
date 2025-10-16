@@ -206,7 +206,7 @@ class App {
   userBalance = 0; // in e8s
 
   // DEFAULT FEES (Fetch Proposal requires 0.2 ICP = 20_000_000 e8s)
-  fees = { fetchProposal_e8s: 20_000_000n, httpOutcall_e8s: 10_000_000n }; // defaults, loaded from backend
+  fees = { fetchProposal_e8s: 20_000_000n, httpOutcall_e8s: 0n }; // defaults, loaded from backend
 
   // Deposit/account state
   depositOwner = null; // canister principal (string)
@@ -376,12 +376,11 @@ class App {
     try {
       const f = await this.backend.getFees();
       const MIN_FETCH_FEE_E8S = 20_000_000n; // 0.2 ICP
-      const MIN_OUTCALL_FEE_E8S = 10_000_000n; // 0.1 ICP (unchanged)
       const fetch = f?.fetchProposal_e8s ?? MIN_FETCH_FEE_E8S;
-      const outcall = f?.httpOutcall_e8s ?? MIN_OUTCALL_FEE_E8S;
+      const outcall = f?.httpOutcall_e8s ?? 0n;
       this.fees = {
         fetchProposal_e8s: fetch < MIN_FETCH_FEE_E8S ? MIN_FETCH_FEE_E8S : fetch,
-        httpOutcall_e8s: outcall < MIN_OUTCALL_FEE_E8S ? MIN_OUTCALL_FEE_E8S : outcall,
+        httpOutcall_e8s: outcall > 0n ? outcall : 0n,
       };
     } catch {
       // keep defaults
@@ -612,9 +611,7 @@ class App {
 
     const fetchFeeE8s = Number(this.fees?.fetchProposal_e8s ?? 0n);
     const fetchFee = fetchFeeE8s / 1e8;
-    const outcallFee = Number(this.fees?.httpOutcall_e8s ?? 0n) / 1e8;
     const formattedFetchFee = fetchFee.toFixed(fetchFee >= 1 ? 2 : 1);
-    const formattedOutcallFee = outcallFee.toFixed(outcallFee >= 1 ? 2 : 1);
     const requiredE8s = fetchFeeE8s + NETWORK_FEE_E8S;
     if (this.userBalance < requiredE8s) {
       const requiredIcp = (requiredE8s / 1e8).toFixed(4);
@@ -628,7 +625,7 @@ class App {
       : '';
 
     const confirmed = window.confirm(
-      `Fetching this proposal will charge ${formattedFetchFee} ICP for the fetch and ${formattedOutcallFee} ICP for any HTTP outcalls from your deposit balance. Fees are forwarded to account identifier ${BENEFICIARY_ACCOUNT_IDENTIFIER}. You must fund your deposit address before continuing.${depositAddressMessage}\n\nDo you want to continue?`,
+      `Fetching this proposal will charge ${formattedFetchFee} ICP from your deposit balance (plus the 0.0001 ICP network fee). The fee is forwarded to account identifier ${BENEFICIARY_ACCOUNT_IDENTIFIER}. You must fund your deposit address before continuing.${depositAddressMessage}\n\nDo you want to continue?`,
     );
     if (!confirmed) return;
 
@@ -703,7 +700,7 @@ class App {
 
       await this.#prefillFromIcApi(id);
 
-      // Commit check (billed): backend first, then browser fallback
+      // Commit check: backend first, then browser fallback
       this.commitStatus = '';
       const repo = this.proposalData.extractedRepo || 'dfinity/ic';
       const commit = this.proposalData.extractedCommit || '';
@@ -784,7 +781,7 @@ class App {
   async #handleFetchVerifyDoc() {
     if (!this.identity) {
       alert(
-        'Login required to use canister fetch (billed). You can still use browser-only fallback for CORS-safe text URLs.',
+        'Login required to use canister fetch. You can still use browser-only fallback for CORS-safe text URLs.',
       );
       // continue; we'll try backend first then fallback
     }
@@ -808,7 +805,7 @@ class App {
         } else {
           this.docPreview = `${contentType || 'binary'} (${bodyArray.length} bytes)`;
         }
-        // reflect billed outcall + update deposit status
+        // stay in sync with canister-side balance state
         await this.#refreshBalance();
         await this.#loadDepositStatus();
       } else {
@@ -1493,10 +1490,7 @@ ${linuxVerify}</pre>
                     <b>Fees</b>: Fetch Proposal = ${
                       (Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(1)
                     }
-                    ICP <em>(+ 0.0001 ICP network fee each)</em>
-                  </div>
-                  <div style="font-size:12px;">
-                    HTTP Outcall Fee = ${(Number(this.fees.httpOutcall_e8s) / 1e8).toFixed(1)} ICP
+                    ICP <em>(+ 0.0001 ICP network fee)</em>
                   </div>
                   <div style="font-size:12px;">
                     <b>Last fetch cycles burned</b>:

@@ -167,9 +167,8 @@ persistent actor verifier {
   // Anonymous principal
   let ANON : Principal = Principal.fromText("2vxsx-fae");
 
-  // **** FEES (Fetch Proposal now 0.2 ICP) ****
+  // **** FEES (single flat fee for Fetch Proposal) ****
   let FEE_FETCH_PROPOSAL_E8S : Nat64 = 20_000_000; // 0.2 ICP
-  let FEE_HTTP_OUTCALL_E8S : Nat64 = 10_000_000; // 0.1 ICP per HTTP outcall
 
   // ICP transfer fee (e8s) for legacy ledger transfer
   let TRANSFER_FEE_E8S : Nat64 = 10_000; // 0.0001 ICP
@@ -373,6 +372,10 @@ persistent actor verifier {
       subaccount = ?sub;
     });
 
+    if (fee_e8s == 0) {
+      return #ok(());
+    };
+
     let totalNeeded : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
 
     if (ledgerBalNat < Nat64.toNat(totalNeeded)) {
@@ -547,7 +550,7 @@ persistent actor verifier {
   } {
     {
       fetchProposal_e8s = FEE_FETCH_PROPOSAL_E8S;
-      httpOutcall_e8s = FEE_HTTP_OUTCALL_E8S;
+      httpOutcall_e8s = 0;
     };
   };
 
@@ -1095,12 +1098,6 @@ persistent actor verifier {
       case (#ok(())) {};
     };
 
-    // bill + forward
-    switch (await chargeAndForward(caller, FEE_HTTP_OUTCALL_E8S, "GitHub commit check")) {
-      case (#err(e)) return #err(e);
-      case (#ok(())) {};
-    };
-
     if (Text.size(commit) == 0) return #err("Commit hash missing");
     if (Text.size(repo) == 0) return #err("Repository missing");
 
@@ -1147,12 +1144,6 @@ persistent actor verifier {
     if (Text.size(url) == 0) return #err("URL missing");
     if (not isStableDomain(url)) {
       return #err("Domain likely dynamic / non-deterministic for canister outcalls; fetch in browser instead.");
-    };
-
-    // bill + forward
-    switch (await chargeAndForward(caller, FEE_HTTP_OUTCALL_E8S, "fetch document")) {
-      case (#err(e)) return #err(e);
-      case (#ok(())) {};
     };
 
     let request : HttpRequestArgs = {
