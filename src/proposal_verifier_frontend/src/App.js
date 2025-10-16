@@ -20,6 +20,7 @@ import { FAQView } from './FAQ.js';
 import { IDL } from '@dfinity/candid';
 import { AuthClient } from '@dfinity/auth-client';
 import { HttpAgent } from '@dfinity/agent';
+import { Principal } from '@dfinity/principal'; // <-- NEW
 
 // -----------------------------
 // Constants / helpers
@@ -328,6 +329,12 @@ class App {
     this.depositCreditedTotal = 0;
     this.depositAvailableToCredit = 0;
 
+    // Also clear the cached owner blob used by utils.principalToAccountIdentifier
+    try {
+      // eslint-disable-next-line no-undef
+      delete window.__ownerBlob; // <-- NEW (nice-to-have)
+    } catch {}
+
     this.#render();
   }
 
@@ -374,6 +381,16 @@ class App {
       const s = await this.backend.getDepositStatus();
       // owner + subaccount for address calculation
       this.depositOwner = String(s.owner);
+
+      // ---- NEW: set owner blob for utils.principalToAccountIdentifier ----
+      try {
+        const ownerBlob = Principal.fromText(this.depositOwner).toUint8Array();
+        // eslint-disable-next-line no-undef
+        window.__ownerBlob = ownerBlob;
+      } catch (e) {
+        console.warn('Failed to set owner blob:', e?.message || e);
+      }
+
       this.depositSubaccountHex = bytesToHex(new Uint8Array(s.subaccount));
       try {
         this.depositAccountIdentifierHex = principalToAccountIdentifier(
@@ -402,6 +419,16 @@ class App {
     try {
       const acc = await this.backend.getDepositAccount();
       this.depositOwner = String(acc.owner);
+
+      // ---- NEW: set owner blob for utils.principalToAccountIdentifier ----
+      try {
+        const ownerBlob = Principal.fromText(this.depositOwner).toUint8Array();
+        // eslint-disable-next-line no-undef
+        window.__ownerBlob = ownerBlob;
+      } catch (e) {
+        console.warn('Failed to set owner blob (legacy path):', e?.message || e);
+      }
+
       this.depositSubaccountHex = bytesToHex(new Uint8Array(acc.subaccount));
       try {
         this.depositAccountIdentifierHex = principalToAccountIdentifier(

@@ -1,6 +1,5 @@
 // src/proposal_verifier_frontend/src/utils.js
 import { sha256 as _sha256, sha224 as _sha224 } from 'js-sha256';
-import { Principal } from '@dfinity/principal';
 
 /* -----------------------------------------------------------------------------
  * HEX HELPERS
@@ -8,7 +7,7 @@ import { Principal } from '@dfinity/principal';
 export function normalizeHex(input) {
   if (!input) return '';
   let s = String(input).trim().replace(/^0x/i, '').replace(/\s+/g, '');
-  // NNS sometimes shows a trailing '%' in copy-pastes; strip it if present.
+  // Some UIs (e.g., copy-paste from NNS) may append a trailing '%'; strip it.
   if (s.endsWith('%')) s = s.slice(0, -1);
   return s.toLowerCase();
 }
@@ -110,45 +109,55 @@ function crc32(bytes) {
 /* -----------------------------------------------------------------------------
  * ACCOUNT IDENTIFIER (owner principal + subaccount)  ->  64-HEX ADDRESS
  *
- * CAI = CRC32(sha224("\x0Aaccount-id" ++ owner ++ subaccount)) ++ sha224(...)
- * - owner: Principal (bytes of Principal.fromText(ownerText).toUint8Array())
- * - subaccount: 32 bytes (hex string input; all-zeros if omitted)
+ * CAI = CRC32(sha224("\x0Aaccount-id" ++ owner_blob ++ subaccount32)) ++ sha224(...)
+ * - owner_blob: Uint8Array of the canister principal bytes.
+ *               We read it from window.__ownerBlob (set in App.js).
+ * - subaccount: 32 bytes (hex string input; padded with zeros if < 32)
  * - output: 32-byte address returned as 64-char lowercase hex
  * -------------------------------------------------------------------------- */
-function principalToBytes(text) {
-  return new Uint8Array(Principal.fromText(text).toUint8Array());
-}
 
-function subaccountToBytes(subaccountHex) {
-  const raw = hexToBytes(subaccountHex || '');
-  if (raw.length === 0) {
-    // all-zero 32-byte subaccount
-    return new Uint8Array(32);
-  }
-  if (raw.length !== 32) throw new Error('Subaccount must be 32 bytes (hex length 64)');
-  return raw;
+// Build 32-byte subaccount from a hex string. Accepts ≤32 bytes; pads with zeros on the right.
+export function subaccountHexToBytes(subHex) {
+  const raw = hexToBytes(subHex || '');
+  if (raw.length > 32) throw new Error('Subaccount must be ≤ 32 bytes');
+  if (raw.length === 32) return raw;
+  const out = new Uint8Array(32);
+  out.set(raw, 0); // left-aligned, zero-padded
+  return out;
 }
 
 /**
  * Compute the legacy 64-hex "Account Identifier" (wallet address) for (owner, subaccount).
  * Most wallets (incl. NNS) want this 64-hex address — NOT the raw subaccount hex.
  *
- * @param {string} ownerPrincipalText - Principal text (e.g., canister principal)
- * @param {string} [subaccountHex] - 64-hex for a 32-byte subaccount; default = all zeros
+ * The owner principal bytes are provided by the app:
+ *   window.__ownerBlob = Principal.fromText(ownerPrincipalText).toUint8Array();
+ *
+ * @param {string} ownerPrincipalText - Principal text (e.g., canister principal). Used only for validation/logs.
+ * @param {string} subaccountHex      - Hex for a ≤32-byte subaccount (will be zero-padded to 32 bytes).
  * @returns {string} 64-hex, lowercase (includes 4-byte CRC32 prefix)
  */
 export function principalToAccountIdentifier(ownerPrincipalText, subaccountHex) {
   if (!ownerPrincipalText) throw new Error('Owner principal is required');
-  const owner = principalToBytes(ownerPrincipalText);
-  const sub = subaccountToBytes(subaccountHex);
+
+  // We deliberately avoid importing @dfinity/principal here.
+  // App.js must set window.__ownerBlob before calling this:
+  //   const ownerBlob = Principal.fromText(ownerText).toUint8Array();
+  //   window.__ownerBlob = ownerBlob;
+  const ownerBlob = window.__ownerBlob;
+  if (!(ownerBlob instanceof Uint8Array)) {
+    throw new Error('owner blob missing (App.js must set window.__ownerBlob)');
+  }
+
+  const sub = subaccountHexToBytes(subaccountHex);
 
   // Domain separator: single length byte 0x0A + "account-id"
   const domainSep = new Uint8Array([0x0a, ...new TextEncoder().encode('account-id')]);
 
-  const data = new Uint8Array(domainSep.length + owner.length + sub.length);
+  const data = new Uint8Array(domainSep.length + ownerBlob.length + sub.length);
   data.set(domainSep, 0);
-  data.set(owner, domainSep.length);
-  data.set(sub, domainSep.length + owner.length);
+  data.set(ownerBlob, domainSep.length);
+  data.set(sub, domainSep.length + ownerBlob.length);
 
   // sha224 returns hex → convert to bytes for CRC step
   const hash = hexToBytes(sha224(data)); // 28 bytes

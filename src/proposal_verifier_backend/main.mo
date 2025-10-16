@@ -362,32 +362,31 @@ persistent actor verifier {
   };
 
   // charge + forward (subtracts fee + transfer fee on success)
-func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<(), Text> {
-  let owner = Principal.fromActor(verifier);
-  let sub = principalToSubaccount(caller);
+  func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<(), Text> {
+    let owner = Principal.fromActor(verifier);
+    let sub = principalToSubaccount(caller);
 
-  // Query live balance on the user's deposit subaccount (owner = this canister)
-  let ledgerBalNat = await ICP_LEDGER.icrc1_balance_of({
-    owner = owner;
-    subaccount = ?sub;
-  });
+    // Query live balance on the user's deposit subaccount (owner = this canister)
+    let ledgerBalNat = await ICP_LEDGER.icrc1_balance_of({
+      owner = owner;
+      subaccount = ?sub;
+    });
 
-  let totalNeeded : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
+    let totalNeeded : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
 
-  if (ledgerBalNat < Nat64.toNat(totalNeeded)) {
-    return #err(
-      "Insufficient balance for " # purpose #
-      ". On-chain subaccount has " # Nat.toText(ledgerBalNat) # " e8s, need " # Nat64.toText(totalNeeded) # " e8s (incl. network fee)."
-    );
+    if (ledgerBalNat < Nat64.toNat(totalNeeded)) {
+      return #err(
+        "Insufficient balance for " # purpose #
+        ". On-chain subaccount has " # Nat.toText(ledgerBalNat) # " e8s, need " # Nat64.toText(totalNeeded) # " e8s (incl. network fee)."
+      );
+    };
+
+    // NEW: actually deduct the fee from the user's subaccount and forward it
+    switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
+      case (#ok(())) { #ok(()) };
+      case (#err(msg)) { #err("Unable to collect fee for " # purpose # ": " # msg) };
+    };
   };
-
-  // NEW: actually deduct the fee from the user's subaccount and forward it
-  switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
-    case (#ok(())) { #ok(()) };
-    case (#err(msg)) { #err("Unable to collect fee for " # purpose # ": " # msg) };
-  };
-};
-
 
   // Public helpers for the UI:
   // - where to deposit (owner = this canister principal, subaccount = user-specific)
@@ -670,7 +669,7 @@ func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : asy
       switch (idxSlash) {
         case (?s1) {
           let owner = textSlice(sl, 0, s1);
-          let rest = textSlice(sl, s1 + 1, Text.size(sl));
+          let rest = textSlice(sl, s1 + 1, Text.size(sl)); // tree|commit/...
           let idxSlash2 = indexOf(rest, "/");
           switch (idxSlash2) {
             case (?s2) {
@@ -925,10 +924,8 @@ func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : asy
       };
       case ("ParticipantManagement") {
         ?(
-          "1. Identify node provider / data center update.\n" #
-          "2. Download referenced PDFs from wiki/dashboard.\n" #
-          "3. sha256sum the PDFs; compare to hashes in the proposal.\n" #
-          "4. Sanity-check provider and forum introduction."
+          "1. Download self-declaration PDFs from wiki; hash and compare.\n" #
+          "2. Verify provider identity and forum context."
         );
       };
       case ("NodeAdmin") {
