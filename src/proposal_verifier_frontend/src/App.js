@@ -42,6 +42,284 @@ const RELEASE_URL_RE =
 const CANDID_PATTERN =
   /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
 
+const DASHBOARD_LABEL_VARIANTS = {
+  proposalType: ['proposal type'],
+  targetCanister: ['target canister', 'canister', 'target canister id'],
+  targetCanisterName: ['target canister name', 'canister name'],
+  controllers: ['controllers', 'controller'],
+  subnetId: ['subnet id', 'subnet'],
+  sourceRepository: ['source repository', 'source repo', 'repository'],
+  sourceCommit: ['source commit', 'commit'],
+  proposer: ['proposer', 'submitted by'],
+  argumentPayload: ['argument payload', 'argument'],
+  wasmHash: ['proposed wasm (gz) sha-256', 'proposed wasm sha-256', 'wasm sha-256', 'wasm hash'],
+};
+
+function cleanDashboardValue(value) {
+  if (value == null) return '';
+  const str = String(value).replace(/\u00a0/g, ' ');
+  return str.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeListDisplay(value) {
+  const cleaned = cleanDashboardValue(value);
+  if (!cleaned) return '';
+  if ((cleaned.startsWith('[') && cleaned.endsWith(']')) || cleaned.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((entry) => cleanDashboardValue(entry))
+          .filter(Boolean)
+          .join(', ');
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+  }
+  return cleaned.replace(/\s*•\s*/g, ', ').replace(/\s*,\s*/g, ', ');
+}
+
+function parseCanisterField(value) {
+  const parsed = { id: '', name: '' };
+  const cleaned = cleanDashboardValue(value);
+  if (!cleaned) return parsed;
+  const nameMatch = cleaned.match(/\(([^)]+)\)/);
+  if (nameMatch) parsed.name = cleanDashboardValue(nameMatch[1]);
+  const tokens = cleaned
+    .replace(/[(),]/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  for (const token of tokens) {
+    try {
+      Principal.fromText(token);
+      parsed.id = token;
+      break;
+    } catch {
+      // ignore tokens that are not principals
+    }
+  }
+  if (!parsed.id) {
+    const fallback = cleaned.match(/[a-z0-9-]{27,}/i);
+    if (fallback) parsed.id = fallback[0];
+  }
+  return parsed;
+}
+
+function findFirstStringValue(node, keys = []) {
+  if (!node || typeof node !== 'object') return '';
+  const queue = [node];
+  const seen = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || typeof current !== 'object') continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    for (const key of keys) {
+      const value = current[key];
+      if (typeof value === 'string' && value.trim()) {
+        return cleanDashboardValue(value);
+      }
+    }
+    for (const value of Object.values(current)) {
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return '';
+}
+
+function extractDashboardReportFields(rawText) {
+  if (!rawText || typeof rawText !== 'string') return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    const first = rawText.indexOf('{');
+    const last = rawText.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+      try {
+        parsed = JSON.parse(rawText.slice(first, last + 1));
+      } catch {
+        return {};
+      }
+    } else {
+      return {};
+    }
+  }
+
+  const labelMap = new Map();
+  const labelKeys = ['label', 'title', 'name', 'heading', 'key', 'field', 'label_text'];
+  const valueKeys = ['value', 'values', 'text', 'content', 'description', 'body', 'data', 'children', 'details'];
+
+  const gatherValue = (input) => {
+    const results = [];
+    const stack = [{ value: input, depth: 0 }];
+    const visited = new WeakSet();
+    while (stack.length) {
+      const { value, depth } = stack.pop();
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        const str = cleanDashboardValue(value);
+        if (str) results.push(str);
+        continue;
+      }
+      if (typeof value === 'object') {
+        if (visited.has(value) || depth > 6) continue;
+        visited.add(value);
+        if (Array.isArray(value)) {
+          for (const item of value) stack.push({ value: item, depth: depth + 1 });
+        } else {
+          for (const key of valueKeys) {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+              stack.push({ value: value[key], depth: depth + 1 });
+            }
+          }
+        }
+      }
+    }
+    return results;
+  };
+
+  const visitedNodes = new WeakSet();
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (visitedNodes.has(node)) return;
+    visitedNodes.add(node);
+    if (Array.isArray(node)) {
+      node.forEach((child) => walk(child));
+      return;
+    }
+    let label = null;
+    for (const key of labelKeys) {
+      const candidate = node[key];
+      if (typeof candidate === 'string' && candidate.trim()) {
+        label = cleanDashboardValue(candidate);
+        if (label) break;
+      }
+    }
+    if (label) {
+      const valueParts = [];
+      for (const key of valueKeys) {
+        if (Object.prototype.hasOwnProperty.call(node, key)) {
+          valueParts.push(...gatherValue(node[key]));
+        }
+      }
+      const combined = cleanDashboardValue(valueParts.join(' '));
+      if (combined) {
+        const normalized = label.toLowerCase();
+        const existing = labelMap.get(normalized);
+        if (!existing || combined.length > existing.length) {
+          labelMap.set(normalized, combined);
+        }
+      }
+    }
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') walk(value);
+    }
+  };
+
+  walk(parsed);
+
+  const getLabelValue = (variants = []) => {
+    for (const variant of variants) {
+      const normalized = variant.toLowerCase();
+      if (labelMap.has(normalized)) {
+        return labelMap.get(normalized);
+      }
+    }
+    return '';
+  };
+
+  const result = {};
+
+  const typeValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.proposalType);
+  if (typeValue) {
+    const parts = typeValue
+      .split(/→|->|=>|›|»|>|:/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const filtered = parts.filter((part) => !/^governance$/i.test(part));
+    if (filtered.length >= 2) {
+      result.proposalCategory = filtered[filtered.length - 2];
+      result.proposalAction = filtered[filtered.length - 1];
+    } else if (filtered.length === 1) {
+      result.proposalAction = filtered[0];
+    }
+  }
+
+  const targetValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.targetCanister);
+  if (targetValue) {
+    const { id, name } = parseCanisterField(targetValue);
+    if (id) result.targetCanisterId = id;
+    if (name) result.targetCanisterName = name;
+  }
+  const targetNameValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.targetCanisterName);
+  if (targetNameValue && !result.targetCanisterName) {
+    result.targetCanisterName = cleanDashboardValue(targetNameValue);
+  }
+
+  const controllersValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.controllers);
+  if (controllersValue) {
+    result.controllers = normalizeListDisplay(controllersValue);
+  }
+
+  const subnetValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.subnetId);
+  if (subnetValue) {
+    result.subnetId = cleanDashboardValue(subnetValue);
+  }
+
+  const repoValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.sourceRepository);
+  if (repoValue) {
+    result.sourceRepository = cleanDashboardValue(repoValue);
+  }
+
+  const commitValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.sourceCommit);
+  if (commitValue) {
+    result.sourceCommit = cleanDashboardValue(commitValue);
+  }
+
+  const proposerValue =
+    getLabelValue(DASHBOARD_LABEL_VARIANTS.proposer) ||
+    findFirstStringValue(parsed, ['proposer', 'submitted_by', 'proposer_principal']);
+  if (proposerValue) {
+    result.proposer = cleanDashboardValue(proposerValue);
+  }
+
+  const wasmValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.wasmHash);
+  if (wasmValue) {
+    const match = wasmValue.match(/[A-Fa-f0-9]{64}/);
+    if (match) {
+      result.wasmHash = match[0];
+    }
+  }
+
+  const argumentValue = getLabelValue(DASHBOARD_LABEL_VARIANTS.argumentPayload);
+  if (argumentValue) {
+    const cleanedArgument = cleanDashboardValue(argumentValue);
+    const hexMatch = cleanedArgument.match(/[A-Fa-f0-9]{64,}/);
+    if (hexMatch) {
+      result.argumentValue = hexMatch[0];
+      result.argumentType = /hash|sha|hex/i.test(cleanedArgument) ? 'Hex' : result.argumentType;
+    } else if (cleanedArgument) {
+      result.argumentValue = cleanedArgument;
+    }
+    if (!result.argumentType) {
+      if (/candid/i.test(cleanedArgument)) {
+        result.argumentType = 'Candid';
+      } else if (/hex|sha-?256|hash/i.test(cleanedArgument)) {
+        result.argumentType = 'Hex';
+      }
+    }
+  }
+
+  return result;
+}
+
 // Add type-specific checklists (keys map to this.checklist fields)
 const TYPE_CHECKLISTS = new Map([
   [
@@ -97,6 +375,7 @@ const REPORT_HEADER_KEYS = [
   'proposer',
   'verificationDate',
   'verifiedBy',
+  'generatedBy',
   'linkNns',
   'linkDashboard',
 ];
@@ -137,6 +416,12 @@ const REPORT_HEADER_INPUTS = [
   { key: 'proposer', label: 'Proposer', placeholder: 'Entity or participant' },
   { key: 'verificationDate', label: 'Verification Date', placeholder: 'YYYY-MM-DD' },
   { key: 'verifiedBy', label: 'Verified By', placeholder: 'Verifier or group' },
+  {
+    key: 'generatedBy',
+    label: 'Generated By',
+    placeholder: 'Your principal identifier',
+    alwaysShow: true,
+  },
   { key: 'linkNns', label: 'NNS dapp view URL', placeholder: 'https://...' },
   { key: 'linkDashboard', label: 'ICP Dashboard URL', placeholder: 'https://...' },
 ];
@@ -322,6 +607,8 @@ class App {
   proposalData = null;
   fullProposalInfo = null; // NEW: raw ProposalInfo for export (.txt)
   reportOverrides = {};
+  reportHeaderAutofill = {};
+  reportGenerationDate = '';
   commitStatus = '';
   hashMatch = false;
   hashError = '';
@@ -428,6 +715,12 @@ class App {
     this.userPrincipal = null;
     this.backend = anon_backend;
     this.userBalance = 0;
+
+    this.proposalData = null;
+    this.fullProposalInfo = null;
+    this.reportOverrides = {};
+    this.reportHeaderAutofill = {};
+    this.reportGenerationDate = '';
 
     // Clear deposit state
     this.depositOwner = null;
@@ -674,6 +967,11 @@ class App {
 
       const text = await res.text();
 
+      const extractedFields = extractDashboardReportFields(text);
+      if (extractedFields && Object.keys(extractedFields).length) {
+        this.reportHeaderAutofill = { ...this.reportHeaderAutofill, ...extractedFields };
+      }
+
       const maybe = extractHexFromTextAroundMarkers(text);
       if (maybe) {
         this.expectedHash = maybe;
@@ -761,6 +1059,8 @@ class App {
         proposal_arg_hash: unwrap(base.proposal_arg_hash),
       };
 
+      this.reportGenerationDate = new Date().toISOString().slice(0, 10);
+      this.reportHeaderAutofill = {};
       // NEW: capture full raw ProposalInfo for export (.txt)
       this.fullProposalInfo = unwrap(data.fullProposalInfo);
       this.reportOverrides = {};
@@ -1632,14 +1932,32 @@ ${linuxVerify}</pre>
       proposer: '',
       verificationDate: '',
       verifiedBy: '',
+      generatedBy: this.userPrincipal || '',
       linkNns: p.url || '',
       linkDashboard: this.dashboardUrl || '',
+    };
+
+    if (this.reportGenerationDate) {
+      defaults.verificationDate = this.reportGenerationDate;
+    }
+
+    const auto = this.reportHeaderAutofill || {};
+    const applyAuto = (key, transform) => {
+      const value = auto[key];
+      if (value === null || value === undefined) return;
+      const str = typeof value === 'string' ? value.trim() : value;
+      if (!defaults[key] && String(str).trim().length) {
+        defaults[key] = transform ? transform(str) : str;
+      }
     };
 
     const actionName = this.#getActionVariantName(this.fullProposalInfo);
     if (actionName) {
       defaults.proposalAction = actionName;
     }
+
+    applyAuto('proposalCategory');
+    applyAuto('proposalAction');
 
     const installCode = this.#extractInstallCodeAction(this.fullProposalInfo);
     if (installCode) {
@@ -1658,6 +1976,16 @@ ${linuxVerify}</pre>
       }
     }
 
+    applyAuto('targetCanisterId');
+    applyAuto('targetCanisterName');
+    applyAuto('controllers');
+    applyAuto('subnetId');
+    applyAuto('sourceRepository');
+    applyAuto('sourceCommit');
+    applyAuto('wasmHash');
+    applyAuto('argumentValue');
+    applyAuto('proposer');
+
     if (!defaults.argumentType) {
       if (this.extractedArgText) {
         defaults.argumentType = 'Candid';
@@ -1667,6 +1995,8 @@ ${linuxVerify}</pre>
         defaults.argumentType = 'Hex';
       }
     }
+
+    applyAuto('argumentType');
 
     if (!defaults.proposalCategory && p.proposalType) {
       defaults.proposalCategory = p.proposalType;
@@ -1719,6 +2049,8 @@ ${linuxVerify}</pre>
       commitDisplay = `[${commitValue}](${commitUrl})`;
     }
 
+    const generatedBy = valueOrNA(final.generatedBy);
+
     const linkNns = final.linkNns && final.linkNns.trim().length
       ? `[NNS dapp view](${final.linkNns.trim()})`
       : '[NNS dapp view]';
@@ -1726,21 +2058,47 @@ ${linuxVerify}</pre>
       ? `[ICP Dashboard record](${final.linkDashboard.trim()})`
       : '[ICP Dashboard record]';
 
-    return [
+    const typeSegments = ['Governance'];
+    if (category !== 'N/A') typeSegments.push(category);
+    if (action !== 'N/A') typeSegments.push(action);
+    const typeDisplay = typeSegments.join(' → ');
+
+    let targetDisplay = 'N/A';
+    if (targetId !== 'N/A' && targetName !== 'N/A') {
+      targetDisplay = `${targetId} - ${targetName}`;
+    } else if (targetId !== 'N/A') {
+      targetDisplay = targetId;
+    } else if (targetName !== 'N/A') {
+      targetDisplay = targetName;
+    }
+
+    let argumentDisplay = 'N/A';
+    if (argType !== 'N/A' && argValue !== 'N/A') {
+      argumentDisplay = `(${argType}) ${argValue}`;
+    } else if (argValue !== 'N/A') {
+      argumentDisplay = argValue;
+    } else if (argType !== 'N/A') {
+      argumentDisplay = `(${argType})`;
+    }
+
+    const lines = [
       `Proposal Verification Report - ${idDisplay} (${title})`,
-      `Proposal Type: Governance → ${category} → ${action}`,
-      `Target Canister: ${targetId} - ${targetName}`,
-      `Controllers: ${controllers}`,
-      `Subnet ID: ${subnet}`,
-      `Source Repository: ${repo}`,
-      `Source Commit: ${commitDisplay}`,
-      `Proposed Wasm (gz) SHA-256: ${wasmHash}`,
-      `Argument Payload: (${argType}) - ${argValue}`,
-      `Proposer: ${proposer}`,
-      `Verification Date: ${verificationDate}`,
-      `Verified by: ${verifiedBy}`,
-      `Links: ${linkNns} • ${linkDashboard}`,
-    ].join('\n');
+      `**Proposal Type:** ${typeDisplay}`,
+      `**Target Canister:** ${targetDisplay}`,
+      `**Controllers:** ${controllers}`,
+      `**Subnet ID:** ${subnet}`,
+      `**Source Repository:** ${repo}`,
+      `**Source Commit:** ${commitDisplay}`,
+      `**Proposed Wasm (gz) SHA-256:** ${wasmHash}`,
+      `**Argument Payload:** ${argumentDisplay}`,
+      `**Proposer:** ${proposer}`,
+      `**Verification Date:** ${verificationDate}`,
+      `**Verified by:** ${verifiedBy}`,
+      `**Generated by:** ${generatedBy}`,
+      `**Links:** ${linkNns} • ${linkDashboard}`,
+    ];
+
+    return lines.join('\n');
   }
 
   #updateReportOverride(key, value) {
@@ -1810,6 +2168,7 @@ ${linuxVerify}</pre>
   }
 
   #handleExportMarkdown() {
+    this.reportGenerationDate = new Date().toISOString().slice(0, 10);
     const data = this.#getExportData();
     if (!data) {
       alert('No proposal data to export.');
@@ -1840,6 +2199,7 @@ ${linuxVerify}</pre>
     a.download = `proposal_${data.id}_report.md`;
     a.click();
     URL.revokeObjectURL(url);
+    this.#render();
   }
 
   // NEW: Export full metadata as plain text (Candid-like)
