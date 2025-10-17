@@ -111,6 +111,9 @@ persistent actor verifier {
     // Type-specific text blocks for the frontend
     verificationSteps : ?Text;
     requiredTools : ?Text;
+
+    // NEW: include raw ProposalInfo for export
+    fullProposalInfo : ?GovernanceTypes.ProposalInfo;
   };
 
   // -----------------------------
@@ -1376,6 +1379,15 @@ persistent actor verifier {
         let steps = getVerificationSteps(base.proposalType);
         let tools = getRequiredTools(base.proposalType);
 
+        // NEW: fetch raw full ProposalInfo for export (separate call, no extra billing)
+        var fullInfoOpt : ?GovernanceTypes.ProposalInfo = null;
+        try {
+          fullInfoOpt := await governance.get_proposal_info(id);
+        } catch (e) {
+          // best-effort: leave as null on failure
+          fullInfoOpt := null;
+        };
+
         #ok({
           base;
           expectedHashFromDashboard = expected;
@@ -1386,6 +1398,7 @@ persistent actor verifier {
           extractedArgText = extractedArg;
           verificationSteps = steps;
           requiredTools = tools;
+          fullProposalInfo = fullInfoOpt; // <-- NEW
         });
       };
     };

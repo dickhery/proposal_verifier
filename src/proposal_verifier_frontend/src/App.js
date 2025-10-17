@@ -25,7 +25,7 @@ import { Principal } from '@dfinity/principal'; // <-- NEW
 // -----------------------------
 // Constants / helpers
 // -----------------------------
- 
+
 // CORS-friendly hosts for browser fetches
 const CORS_ALLOWED_HOSTS = new Set([
   'ic-api.internetcomputer.org',
@@ -33,15 +33,15 @@ const CORS_ALLOWED_HOSTS = new Set([
   'raw.githubusercontent.com',
   'dashboard.internetcomputer.org',
 ]);
- 
+
 // Regex helper to spot release package links in payloads
 const RELEASE_URL_RE =
   /https:\/\/download\.dfinity\.(?:systems|network)\/ic\/[0-9a-f]{40}\/[^"'\s]+/gi;
- 
+
 // Candid-ish text detection (coarse but useful for hints)
 const CANDID_PATTERN =
   /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
- 
+
 // Add type-specific checklists (keys map to this.checklist fields)
 const TYPE_CHECKLISTS = new Map([
   [
@@ -191,6 +191,45 @@ function encodeUnitHex() {
   return bytesToHex(bytes);
 }
 
+// NEW: Simple Candid-like stringifier for metadata export
+function stringifyToCandid(obj, indent = '') {
+  if (obj === null || obj === undefined) return 'null';
+  if (typeof obj === 'bigint' || typeof obj === 'number') return String(obj);
+  if (typeof obj === 'boolean') return obj ? 'true' : 'false';
+  if (typeof obj === 'string') return `"${obj.replace(/"/g, '\\"')}"`;
+  // Principals (from @dfinity/principal)
+  if (
+    obj &&
+    typeof obj === 'object' &&
+    typeof obj.toText === 'function' &&
+    typeof obj.toUint8Array === 'function'
+  ) {
+    try {
+      return `principal "${obj.toText()}"`;
+    } catch {
+      // fall through
+    }
+  }
+  if (obj instanceof Uint8Array) {
+    return `blob "${Array.from(obj)
+      .map((b) => '\\' + b.toString(16).padStart(2, '0'))
+      .join('')}"`;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return 'vec {}';
+    return `vec { ${obj.map((v) => stringifyToCandid(v, indent + '  ')).join('; ')} }`;
+  }
+  if (typeof obj === 'object') {
+    const entries = Object.entries(obj);
+    if (entries.length === 0) return 'record {}';
+    const lines = entries.map(
+      ([k, v]) => `${indent}  ${k} = ${stringifyToCandid(v, indent + '  ')}`,
+    );
+    return `record {\n${lines.join(';\n')}\n${indent}}`;
+  }
+  return String(obj); // fallback
+}
+
 const NETWORK_FEE_E8S = 10_000; // 0.0001 ICP
 const BENEFICIARY_ACCOUNT_IDENTIFIER =
   '2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e';
@@ -220,6 +259,7 @@ class App {
 
   // --- app state ---
   proposalData = null;
+  fullProposalInfo = null; // NEW: raw ProposalInfo for export (.txt)
   commitStatus = '';
   hashMatch = false;
   hashError = '';
@@ -658,6 +698,9 @@ class App {
         proposal_wasm_hash: unwrap(base.proposal_wasm_hash),
         proposal_arg_hash: unwrap(base.proposal_arg_hash),
       };
+
+      // NEW: capture full raw ProposalInfo for export (.txt)
+      this.fullProposalInfo = unwrap(data.fullProposalInfo);
 
       // Pull a recommended arg verification command from the summary (if present)
       this.recommendedArgCmd = extractArgVerificationCommand(this.proposalData.summary);
@@ -1479,6 +1522,8 @@ ${linuxVerify}</pre>
       docResults: this.docResults,
       lastFetchCyclesBurned: this.lastFetchCyclesBurned,
       rebuildScript: this.rebuildScript,
+      // NEW: full metadata for plain-text export
+      fullProposalInfo: this.fullProposalInfo,
     };
   }
 
@@ -1526,6 +1571,28 @@ ${linuxVerify}</pre>
     URL.revokeObjectURL(url);
   }
 
+  // NEW: Export full metadata as plain text (Candid-like)
+  #handleExportMetadata() {
+    const data = this.#getExportData();
+    if (!data) {
+      alert('No proposal data to export.');
+      return;
+    }
+    const full = data.fullProposalInfo;
+    if (!full) {
+      alert('Full metadata not available.');
+      return;
+    }
+    const text = stringifyToCandid(full);
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `proposal_${data.id}_metadata.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // ----------------- render -----------------
 
   #render() {
@@ -1552,7 +1619,7 @@ ${linuxVerify}</pre>
                 <div style="text-align:right;">
                 <!--  <div style="font-size:12px;">
                     <b>User</b>: <code>${this.userPrincipal}</code>
-                  </div>  --> 
+                  </div>  -->
                   <div style="font-size:12px;">
                     <b>Balance</b>: ${(this.userBalance / 1e8).toFixed(8)} ICP
                   </div>
@@ -1904,6 +1971,14 @@ ${linuxVerify}</pre>
                 <button class="btn" @click=${() => this.#handleExportJson()}>Download JSON</button>
                 <button class="btn secondary" @click=${() => this.#handleExportMarkdown()}>
                   Download Markdown
+                </button>
+                <button
+                  class="btn secondary"
+                  @click=${() => this.#handleExportMetadata()}
+                  ?disabled=${!this.fullProposalInfo}
+                  title=${this.fullProposalInfo ? '' : 'Fetch a proposal first'}
+                >
+                  Export Metadata (.txt)
                 </button>
               </section>
             `
