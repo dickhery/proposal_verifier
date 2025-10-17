@@ -80,6 +80,67 @@ const TYPE_CHECKLISTS = new Map([
   ],
 ]);
 
+const REPORT_HEADER_KEYS = [
+  'proposalId',
+  'proposalTitle',
+  'proposalCategory',
+  'proposalAction',
+  'targetCanisterId',
+  'targetCanisterName',
+  'controllers',
+  'subnetId',
+  'sourceRepository',
+  'sourceCommit',
+  'wasmHash',
+  'argumentType',
+  'argumentValue',
+  'proposer',
+  'verificationDate',
+  'verifiedBy',
+  'linkNns',
+  'linkDashboard',
+];
+
+const REPORT_HEADER_INPUTS = [
+  { key: 'proposalTitle', label: 'Proposal Title', placeholder: 'Enter the proposal title' },
+  {
+    key: 'proposalCategory',
+    label: 'Proposal Category',
+    placeholder: 'e.g. ProtocolCanisterManagement',
+  },
+  { key: 'proposalAction', label: 'Action Type', placeholder: 'e.g. InstallCode' },
+  {
+    key: 'targetCanisterId',
+    label: 'Target Canister ID',
+    placeholder: 'e.g. ryjl3-tyaaa-aaaaa-aaaba-cai',
+  },
+  { key: 'targetCanisterName', label: 'Target Canister Name', placeholder: 'Friendly name' },
+  {
+    key: 'controllers',
+    label: 'Controllers',
+    placeholder: 'Comma-separated controller principals or canisters',
+  },
+  { key: 'subnetId', label: 'Subnet ID', placeholder: 'Subnet identifier' },
+  {
+    key: 'sourceRepository',
+    label: 'Source Repository',
+    placeholder: 'owner/repo or repository URL',
+  },
+  { key: 'sourceCommit', label: 'Source Commit or Tag', placeholder: 'Commit hash or release tag' },
+  { key: 'wasmHash', label: 'WASM Hash', placeholder: '64-character SHA-256 hash' },
+  { key: 'argumentType', label: 'Argument Type', placeholder: 'Candid, Raw Hex, etc.' },
+  {
+    key: 'argumentValue',
+    label: 'Argument Hash or Value',
+    placeholder: 'Payload hash or encoded value',
+  },
+  { key: 'proposer', label: 'Proposer', placeholder: 'Entity or participant' },
+  { key: 'verificationDate', label: 'Verification Date', placeholder: 'YYYY-MM-DD' },
+  { key: 'verifiedBy', label: 'Verified By', placeholder: 'Verifier or group' },
+  { key: 'linkNns', label: 'NNS dapp view URL', placeholder: 'https://...' },
+  { key: 'linkDashboard', label: 'ICP Dashboard URL', placeholder: 'https://...' },
+];
+
 // Find a 64-hex near helpful markers
 function extractHexFromTextAroundMarkers(
   text,
@@ -260,6 +321,7 @@ class App {
   // --- app state ---
   proposalData = null;
   fullProposalInfo = null; // NEW: raw ProposalInfo for export (.txt)
+  reportOverrides = {};
   commitStatus = '';
   hashMatch = false;
   hashError = '';
@@ -701,6 +763,7 @@ class App {
 
       // NEW: capture full raw ProposalInfo for export (.txt)
       this.fullProposalInfo = unwrap(data.fullProposalInfo);
+      this.reportOverrides = {};
 
       // Pull a recommended arg verification command from the summary (if present)
       this.recommendedArgCmd = extractArgVerificationCommand(this.proposalData.summary);
@@ -1492,9 +1555,210 @@ ${linuxVerify}</pre>
 
   // ----------------- NEW: Export helpers -----------------
 
+  #nat8ArrayToUint8Array(value) {
+    if (!value) return null;
+    if (value instanceof Uint8Array) return value;
+    if (Array.isArray(value)) return Uint8Array.from(value);
+    if (value.buffer instanceof ArrayBuffer) return new Uint8Array(value.buffer);
+    return null;
+  }
+
+  #principalToText(value) {
+    if (!value) return '';
+    try {
+      if (typeof value === 'string') return value;
+      if (value instanceof Uint8Array) {
+        return Principal.fromUint8Array(value).toText();
+      }
+      if (Array.isArray(value)) {
+        return Principal.fromUint8Array(Uint8Array.from(value)).toText();
+      }
+      if (typeof value.toText === 'function') {
+        return value.toText();
+      }
+    } catch (e) {
+      console.warn('Unable to decode principal', e?.message || e);
+    }
+    return '';
+  }
+
+  #getActionVariantName(fullInfo) {
+    if (!fullInfo) return '';
+    try {
+      const proposal = fullInfo.proposal?.[0];
+      if (!proposal) return '';
+      const action = proposal.action?.[0];
+      if (!action) return '';
+      const [entry] = Object.entries(action);
+      return entry ? entry[0] : '';
+    } catch {
+      return '';
+    }
+  }
+
+  #extractInstallCodeAction(fullInfo) {
+    if (!fullInfo) return null;
+    try {
+      const proposal = fullInfo.proposal?.[0];
+      if (!proposal) return null;
+      const action = proposal.action?.[0];
+      if (!action) return null;
+      if (action.InstallCode) return action.InstallCode;
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  #computeReportHeaderDefaults() {
+    const p = this.proposalData;
+    if (!p) return null;
+
+    const defaults = {
+      proposalId: p.id != null ? String(p.id) : '',
+      proposalTitle: p.title || '',
+      proposalCategory: p.proposalType && p.proposalType !== 'Unknown' ? p.proposalType : '',
+      proposalAction: '',
+      targetCanisterId: '',
+      targetCanisterName: '',
+      controllers: '',
+      subnetId: '',
+      sourceRepository: p.extractedRepo || '',
+      sourceCommit: p.extractedCommit || '',
+      sourceCommitUrl: p.commitUrl || '',
+      wasmHash: p.proposal_wasm_hash || this.expectedHash || '',
+      argumentType: '',
+      argumentValue: p.proposal_arg_hash || this.argHash || '',
+      proposer: '',
+      verificationDate: '',
+      verifiedBy: '',
+      linkNns: p.url || '',
+      linkDashboard: this.dashboardUrl || '',
+    };
+
+    const actionName = this.#getActionVariantName(this.fullProposalInfo);
+    if (actionName) {
+      defaults.proposalAction = actionName;
+    }
+
+    const installCode = this.#extractInstallCodeAction(this.fullProposalInfo);
+    if (installCode) {
+      const canisterPrincipal = installCode.canister_id?.[0];
+      const canisterText = this.#principalToText(canisterPrincipal);
+      if (canisterText) defaults.targetCanisterId = canisterText;
+
+      if (!defaults.wasmHash && installCode.wasm_module_hash?.[0]) {
+        const wasmArray = this.#nat8ArrayToUint8Array(installCode.wasm_module_hash[0]);
+        if (wasmArray) defaults.wasmHash = bytesToHex(wasmArray);
+      }
+
+      if (!defaults.argumentValue && installCode.arg_hash?.[0]) {
+        const argArray = this.#nat8ArrayToUint8Array(installCode.arg_hash[0]);
+        if (argArray) defaults.argumentValue = bytesToHex(argArray);
+      }
+    }
+
+    if (!defaults.argumentType) {
+      if (this.extractedArgText) {
+        defaults.argumentType = 'Candid';
+      } else if (this.argInputType === 'candid') {
+        defaults.argumentType = 'Candid';
+      } else if (defaults.argumentValue) {
+        defaults.argumentType = 'Hex';
+      }
+    }
+
+    if (!defaults.proposalCategory && p.proposalType) {
+      defaults.proposalCategory = p.proposalType;
+    }
+
+    return defaults;
+  }
+
+  #applyReportOverrides(defaults = {}) {
+    const final = {};
+    for (const key of REPORT_HEADER_KEYS) {
+      const base = defaults?.[key] ?? '';
+      const overrideRaw = this.reportOverrides?.[key];
+      const override = typeof overrideRaw === 'string' ? overrideRaw.trim() : '';
+      final[key] = override.length ? override : typeof base === 'string' ? base : '';
+    }
+    final.sourceCommitUrl = defaults?.sourceCommitUrl || '';
+    return final;
+  }
+
+  #formatReportHeaderMarkdown(final, defaults = {}) {
+    if (!final) return '';
+    const valueOrNA = (value) => {
+      if (value === null || value === undefined) return 'N/A';
+      const str = String(value).trim();
+      return str.length ? str : 'N/A';
+    };
+
+    const idValue = valueOrNA(final.proposalId);
+    const idDisplay = idValue === 'N/A' ? 'N/A' : `#${idValue}`;
+    const title = valueOrNA(final.proposalTitle);
+    const category = valueOrNA(final.proposalCategory);
+    const action = valueOrNA(final.proposalAction);
+    const targetId = valueOrNA(final.targetCanisterId);
+    const targetName = valueOrNA(final.targetCanisterName);
+    const controllers = valueOrNA(final.controllers);
+    const subnet = valueOrNA(final.subnetId);
+    const repo = valueOrNA(final.sourceRepository);
+    const commitValue = valueOrNA(final.sourceCommit);
+    const wasmHash = valueOrNA(final.wasmHash);
+    const argType = valueOrNA(final.argumentType);
+    const argValue = valueOrNA(final.argumentValue);
+    const proposer = valueOrNA(final.proposer);
+    const verificationDate = valueOrNA(final.verificationDate);
+    const verifiedBy = valueOrNA(final.verifiedBy);
+
+    let commitDisplay = commitValue;
+    const commitUrl = defaults?.sourceCommitUrl;
+    if (commitValue !== 'N/A' && commitUrl) {
+      commitDisplay = `[${commitValue}](${commitUrl})`;
+    }
+
+    const linkNns = final.linkNns && final.linkNns.trim().length
+      ? `[NNS dapp view](${final.linkNns.trim()})`
+      : '[NNS dapp view]';
+    const linkDashboard = final.linkDashboard && final.linkDashboard.trim().length
+      ? `[ICP Dashboard record](${final.linkDashboard.trim()})`
+      : '[ICP Dashboard record]';
+
+    return [
+      `Proposal Verification Report - ${idDisplay} (${title})`,
+      `Proposal Type: Governance → ${category} → ${action}`,
+      `Target Canister: ${targetId} - ${targetName}`,
+      `Controllers: ${controllers}`,
+      `Subnet ID: ${subnet}`,
+      `Source Repository: ${repo}`,
+      `Source Commit: ${commitDisplay}`,
+      `Proposed Wasm (gz) SHA-256: ${wasmHash}`,
+      `Argument Payload: (${argType}) - ${argValue}`,
+      `Proposer: ${proposer}`,
+      `Verification Date: ${verificationDate}`,
+      `Verified by: ${verifiedBy}`,
+      `Links: ${linkNns} • ${linkDashboard}`,
+    ].join('\n');
+  }
+
+  #updateReportOverride(key, value) {
+    const next = { ...this.reportOverrides };
+    if (typeof value === 'string' && value.length) {
+      next[key] = value;
+    } else {
+      delete next[key];
+    }
+    this.reportOverrides = next;
+    this.#render();
+  }
+
   #getExportData() {
     const p = this.proposalData;
     if (!p) return null;
+    const headerDefaults = this.#computeReportHeaderDefaults() || {};
+    const headerFinal = this.#applyReportOverrides(headerDefaults);
     return {
       id: p.id,
       type: p.proposalType,
@@ -1524,6 +1788,8 @@ ${linuxVerify}</pre>
       rebuildScript: this.rebuildScript,
       // NEW: full metadata for plain-text export
       fullProposalInfo: this.fullProposalInfo,
+      reportHeader: headerFinal,
+      reportHeaderDefaults: headerDefaults,
     };
   }
 
@@ -1549,7 +1815,12 @@ ${linuxVerify}</pre>
       alert('No proposal data to export.');
       return;
     }
-    let md = `# Proposal ${data.id} Verification Report\n\n`;
+    const headerText = this.#formatReportHeaderMarkdown(
+      data.reportHeader,
+      data.reportHeaderDefaults,
+    );
+    let md = headerText ? `${headerText}\n\n---\n\n` : '';
+    md += `# Proposal ${data.id} Verification Report\n\n`;
     md += `## Details\n- **Type**: ${data.type}\n- **Title**: ${data.title || 'N/A'}\n- **URL**: ${data.url}\n- **Summary**: \n${data.summary}\n\n`;
     md += `## Extracted Info\n- **Repo**: ${data.extractedRepo || 'N/A'}\n- **Commit**: ${data.extractedCommit || 'N/A'} (${data.commitUrl || ''})\n- **Commit Status**: ${data.commitStatus || 'N/A'}\n\n`;
     md += `## Hashes\n- **Onchain WASM**: ${data.onchainWasmHash || 'N/A'}\n- **Onchain Arg**: ${data.onchainArgHash || 'N/A'}\n- **Expected**: ${data.expectedHash || 'N/A'} (source: ${data.expectedHashSource || 'N/A'})\n- **Arg Match**: ${data.argMatch ? '✅' : '❌'}\n\n`;
@@ -1608,6 +1879,18 @@ ${linuxVerify}</pre>
 
     const p = this.proposalData;
     const loading = this.isFetching;
+    const headerDefaults = p ? this.#computeReportHeaderDefaults() || {} : null;
+    const headerFinal = headerDefaults ? this.#applyReportOverrides(headerDefaults) : null;
+    const headerPreview = headerDefaults
+      ? this.#formatReportHeaderMarkdown(headerFinal, headerDefaults)
+      : '';
+    const manualReportInputs = headerDefaults
+      ? REPORT_HEADER_INPUTS.filter((field) => {
+          if (field.alwaysShow) return true;
+          const base = headerDefaults[field.key];
+          return !base;
+        })
+      : [];
 
     const body = html`
       <nav class="topbar">
@@ -1968,18 +2251,49 @@ ${linuxVerify}</pre>
               <!-- NEW: Export section -->
               <section>
                 <h2>Export Report</h2>
-                <button class="btn" @click=${() => this.#handleExportJson()}>Download JSON</button>
-                <button class="btn secondary" @click=${() => this.#handleExportMarkdown()}>
-                  Download Markdown
-                </button>
-                <button
-                  class="btn secondary"
-                  @click=${() => this.#handleExportMetadata()}
-                  ?disabled=${!this.fullProposalInfo}
-                  title=${this.fullProposalInfo ? '' : 'Fetch a proposal first'}
-                >
-                  Export Metadata (.txt)
-                </button>
+                ${headerDefaults
+                  ? html`
+                      <h3>Summary Preview</h3>
+                      <pre class="report-preview">${headerPreview}</pre>
+                    `
+                  : ''}
+                ${headerDefaults
+                  ? manualReportInputs.length
+                    ? html`
+                        <h3>Fill Missing Details</h3>
+                        <div class="report-manual-fields">
+                          ${manualReportInputs.map(
+                            (field) => html`<label>
+                              <span>${field.label}</span>
+                              <input
+                                type="text"
+                                .value=${this.reportOverrides[field.key] ?? ''}
+                                placeholder=${field.placeholder || ''}
+                                @input=${(e) =>
+                                  this.#updateReportOverride(field.key, e.target.value)}
+                              />
+                            </label>`,
+                          )}
+                        </div>
+                      `
+                    : html`<p>All summary fields were populated automatically.</p>`
+                  : ''}
+                <div class="export-buttons">
+                  <button class="btn" @click=${() => this.#handleExportJson()}>
+                    Download JSON
+                  </button>
+                  <button class="btn secondary" @click=${() => this.#handleExportMarkdown()}>
+                    Download Markdown
+                  </button>
+                  <button
+                    class="btn secondary"
+                    @click=${() => this.#handleExportMetadata()}
+                    ?disabled=${!this.fullProposalInfo}
+                    title=${this.fullProposalInfo ? '' : 'Fetch a proposal first'}
+                  >
+                    Export Metadata (.txt)
+                  </button>
+                </div>
               </section>
             `
           : ''}
