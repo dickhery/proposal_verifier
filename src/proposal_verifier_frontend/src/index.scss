@@ -194,3 +194,36 @@ details.type-guidance {
   border-radius: 4px;
 }
 details.type-guidance summary { font-weight: bold; }
+
+.report-preview {
+  margin: 0 0 16px;
+}
+
+.report-manual-fields {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 16px;
+}
+
+.report-manual-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.95rem;
+}
+
+.report-manual-fields label span {
+  font-weight: 600;
+}
+
+.report-manual-fields input {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.export-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
