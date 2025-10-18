@@ -95,6 +95,11 @@ persistent actor verifier {
     proposal_wasm_hash : ?Text;
   };
 
+  type BillingSnapshot = {
+    remaining_balance_e8s : Nat64;
+    credited_total_e8s : Nat64;
+  };
+
   type AugmentedProposalInfo = {
     base : SimplifiedProposalInfo;
     expectedHashFromDashboard : ?Text;
@@ -114,6 +119,9 @@ persistent actor verifier {
 
     // NEW: include raw ProposalInfo for export
     fullProposalInfo : ?GovernanceTypes.ProposalInfo;
+
+    // Snapshot of the caller's balance after billing the fetch
+    billingSnapshot : BillingSnapshot;
   };
 
   // -----------------------------
@@ -176,8 +184,10 @@ persistent actor verifier {
   // ICP transfer fee (e8s) for legacy ledger transfer
   let TRANSFER_FEE_E8S : Nat64 = 10_000; // 0.0001 ICP
 
-  // Cycles reserved for HTTPS outcalls (5B covers ~2 MB responses comfortably)
-  let HTTP_OUTCALL_CYCLES : Nat = 5_000_000_000;
+  // Cycles reserved for HTTPS outcalls. Responses we fetch are well under 2 MiB, and
+  // per IC pricing (≈400M base + ~2k/byte) the total cost stays below 1B cycles.
+  // Reserving 1B keeps ample headroom while avoiding the previous 5B over-allocation.
+  let HTTP_OUTCALL_CYCLES : Nat = 1_000_000_000;
 
   // Very small, persistent balance map (Principal -> e8s).
   // Simple array-based storage to keep stability trivial.
@@ -432,37 +442,45 @@ persistent actor verifier {
   };
 
   // charge + forward (subtracts fee + transfer fee on success)
-  func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<(), Text> {
+  func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<Nat64, Text> {
+    if (fee_e8s == 0) {
+      return #ok(getBalanceInternal(caller));
+    };
+
     let owner = Principal.fromActor(verifier);
     let sub = principalToSubaccount(caller);
-
-    // Query live balance on the user's deposit subaccount (owner = this canister)
-    let ledgerBalNat = await ICP_LEDGER.icrc1_balance_of({
-      owner = owner;
-      subaccount = ?sub;
-    });
-
-    if (fee_e8s == 0) {
-      return #ok(());
-    };
-
     let totalNeeded : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
 
-    if (ledgerBalNat < Nat64.toNat(totalNeeded)) {
-      return #err(
-        "Insufficient balance for " # purpose #
-        ". On-chain subaccount has " # Nat.toText(ledgerBalNat) # " e8s, need " # Nat64.toText(totalNeeded) # " e8s (incl. network fee)."
-      );
+    var balanceBefore : Nat64 = getBalanceInternal(caller);
+
+    if (balanceBefore < totalNeeded) {
+      try {
+        let ledgerBalNat = await ICP_LEDGER.icrc1_balance_of({
+          owner = owner;
+          subaccount = ?sub;
+        });
+        let ledgerBal64 : Nat64 = Nat64.fromNat(ledgerBalNat);
+        setBalanceInternal(caller, ledgerBal64);
+        setCredited(caller, ledgerBal64);
+        balanceBefore := ledgerBal64;
+        if (ledgerBal64 < totalNeeded) {
+          return #err(
+            "Insufficient balance for " # purpose #
+            ". On-chain subaccount has " # Nat64.toText(ledgerBal64) # " e8s, need " # Nat64.toText(totalNeeded) # " e8s (incl. network fee)."
+          );
+        };
+      } catch (e) {
+        return #err("Ledger query failed: " # Error.message(e));
+      };
     };
 
-    // NEW: actually deduct the fee from the user's subaccount and forward it
     switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
       case (#ok(())) {
-        let remainingNat : Nat = ledgerBalNat - Nat64.toNat(totalNeeded);
+        let remainingNat : Nat = Nat64.toNat(balanceBefore) - Nat64.toNat(totalNeeded);
         let remaining64 : Nat64 = Nat64.fromNat(remainingNat);
         setBalanceInternal(caller, remaining64);
         setCredited(caller, remaining64);
-        #ok(())
+        #ok(remaining64)
       };
       case (#err(msg)) { #err("Unable to collect fee for " # purpose # ": " # msg) };
     };
@@ -1052,10 +1070,15 @@ persistent actor verifier {
   type ProposalInternalBundle = {
     base : SimplifiedProposalInfo;
     full : ?GovernanceTypes.ProposalInfo;
+    billing : BillingSnapshot;
   };
 
   func getProposalInternal(id : Nat64, caller : Principal) : async Result.Result<ProposalInternalBundle, Text> {
     let cyclesBefore = Cycles.balance();
+    var billingSnapshot : BillingSnapshot = {
+      remaining_balance_e8s = getBalanceInternal(caller);
+      credited_total_e8s = getCredited(caller);
+    };
     func finish(res : Result.Result<ProposalInternalBundle, Text>) : Result.Result<ProposalInternalBundle, Text> {
       let cyclesAfter = Cycles.balance();
       if (cyclesBefore > cyclesAfter) {
@@ -1075,7 +1098,12 @@ persistent actor verifier {
     // bill + forward fee before work (single charge)
     switch (await chargeAndForward(caller, FEE_FETCH_PROPOSAL_E8S, "fetch proposal")) {
       case (#err(e)) return finish(#err(e));
-      case (#ok(())) {};
+      case (#ok(remaining)) {
+        billingSnapshot := {
+          remaining_balance_e8s = remaining;
+          credited_total_e8s = getCredited(caller);
+        };
+      };
     };
 
     try {
@@ -1162,7 +1190,7 @@ persistent actor verifier {
                 proposal_wasm_hash;
               };
 
-              finish(#ok({ base = baseInfo; full = ?info }));
+              finish(#ok({ base = baseInfo; full = ?info; billing = billingSnapshot }));
             };
             case _ { finish(#err("Proposal missing summary data")) };
           };
@@ -1492,6 +1520,7 @@ persistent actor verifier {
           verificationSteps = steps;
           requiredTools = tools;
           fullProposalInfo = fullInfoOpt; // <-- NEW
+          billingSnapshot = bundle.billing;
         });
       };
     };

@@ -628,6 +628,7 @@ class App {
   argHash = null; // arg_hash (from dashboard/ic-api or backend)
 
   payloadSnippetFromDashboard = null;
+  payloadSnippetRawFromDashboard = null;
   dashboardUrl = '';
 
   releasePackageUrls = [];
@@ -1029,6 +1030,140 @@ class App {
     }
   }
 
+  #consumeJsonStringLiteral(source) {
+    if (!source || source[0] !== '"') return null;
+    let escaped = false;
+    for (let i = 1; i < source.length; i += 1) {
+      const ch = source[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        return source.slice(0, i + 1);
+      }
+    }
+    return null;
+  }
+
+  #consumeBalancedJson(source) {
+    if (!source || source[0] !== '{') return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < source.length; i += 1) {
+      const ch = source[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') {
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return source.slice(0, i + 1);
+        }
+      }
+    }
+    return null;
+  }
+
+  #decodeJsonEscapes(text) {
+    if (!text || typeof text !== 'string') return '';
+    try {
+      const escaped = text
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n')
+        .replace(/\t/g, '\\t');
+      return JSON.parse(`"${escaped}"`);
+    } catch {
+      return text;
+    }
+  }
+
+  #prettifyJsonText(text) {
+    if (typeof text !== 'string') return '';
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    try {
+      const parsed = JSON.parse(trimmed);
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return '';
+    }
+  }
+
+  #normalizeDashboardPayloadSnippet(snippet) {
+    if (!snippet || typeof snippet !== 'string') return '';
+    let text = snippet.trim();
+    if (!text) return '';
+
+    const lower = text.toLowerCase();
+    const payloadIdx = lower.indexOf('"payload"');
+    if (payloadIdx >= 0) {
+      const fromPayload = text.slice(payloadIdx);
+      const colonIdx = fromPayload.indexOf(':');
+      if (colonIdx >= 0) {
+        text = fromPayload.slice(colonIdx + 1).trim();
+      }
+    }
+
+    if (text.startsWith('"')) {
+      const literal = this.#consumeJsonStringLiteral(text);
+      if (literal) {
+        try {
+          const decoded = JSON.parse(literal);
+          const pretty = this.#prettifyJsonText(decoded);
+          return (pretty || decoded || '').toString();
+        } catch {
+          const inner = literal.slice(1, -1);
+          return this.#decodeJsonEscapes(inner).trim();
+        }
+      }
+    }
+
+    if (text.startsWith('{')) {
+      const balanced = this.#consumeBalancedJson(text);
+      if (balanced) {
+        const pretty = this.#prettifyJsonText(balanced);
+        if (pretty) return pretty;
+        return this.#decodeJsonEscapes(balanced).trim();
+      }
+    }
+
+    return this.#decodeJsonEscapes(text).trim();
+  }
+
+  #inferDashboardPayloadType(snippet) {
+    if (!snippet || typeof snippet !== 'string') return '';
+    const trimmed = snippet.trim();
+    if (!trimmed) return '';
+    if (CANDID_PATTERN.test(trimmed)) {
+      return 'Candid';
+    }
+    if (/^[{\[]/.test(trimmed) || trimmed.includes('":')) {
+      return 'JSON';
+    }
+    return 'Text';
+  }
+
   async #handleFetchProposal(e) {
     e.preventDefault();
     if (this.isFetching) return;
@@ -1073,6 +1208,17 @@ class App {
 
       const extractedUrls = base.extractedUrls || [];
 
+      const billing = data.billingSnapshot;
+
+      if (billing) {
+        const remaining = Number(billing.remaining_balance_e8s ?? 0n);
+        const credited = Number(billing.credited_total_e8s ?? 0n);
+        this.userBalance = remaining;
+        this.depositLedgerBalance = remaining;
+        this.depositCreditedTotal = credited;
+        this.depositAvailableToCredit = Math.max(0, remaining - credited);
+      }
+
       this.proposalData = {
         id: Number(base.id),
         summary: base.summary,
@@ -1112,7 +1258,10 @@ class App {
 
       this.argHash = unwrap(data.argHashFromDashboard) || this.argHash || null;
 
-      this.payloadSnippetFromDashboard = unwrap(data.payloadSnippetFromDashboard);
+      const rawPayloadSnippet = unwrap(data.payloadSnippetFromDashboard);
+      this.payloadSnippetRawFromDashboard = rawPayloadSnippet;
+      const normalizedPayload = this.#normalizeDashboardPayloadSnippet(rawPayloadSnippet);
+      this.payloadSnippetFromDashboard = normalizedPayload || rawPayloadSnippet || null;
       this.dashboardUrl = data.dashboardUrl;
 
       this.extractedArgText = unwrap(data.extractedArgText) || null;
@@ -1181,10 +1330,6 @@ class App {
 
       // NEW: set interactive type checklist items
       this.typeChecklistItems = TYPE_CHECKLISTS.get(this.proposalData?.proposalType) || [];
-
-      // Reflect billed deduction and refresh deposit status
-      await this.#refreshBalance();
-      await this.#loadDepositStatus();
 
       if (typeof this.backend.getLastFetchCyclesBurned === 'function') {
         try {
@@ -1990,9 +2135,8 @@ ${linuxVerify}</pre>
       this.reportHeaderAutofill?.wasmHash,
       this.expectedHash,
     );
-    const argCandidates = candidateList(
-      installArg,
-      this.proposalData.proposal_arg_hash,
+    const onchainArgCandidates = candidateList(installArg, this.proposalData.proposal_arg_hash);
+    const dashboardArgCandidates = candidateList(
       this.reportHeaderAutofill?.argumentValue,
       this.argHash,
     );
@@ -2008,17 +2152,21 @@ ${linuxVerify}</pre>
       wasm = restore(installWasm);
     }
 
-    const argPreferred = argCandidates.find((v) => !eq(v, wasm));
-    let arg = argPreferred || (argCandidates.length ? argCandidates[0] : '');
-
     if (installWasm && !eq(wasm, installWasm)) {
       const installCandidate = restore(installWasm);
       if (installCandidate) wasm = installCandidate;
     }
-    if (installArg && !eq(arg, installArg)) {
-      const installCandidate = restore(installArg);
-      if (installCandidate) arg = installCandidate;
-    }
+
+    const onchainArg = onchainArgCandidates.length ? onchainArgCandidates[0] : null;
+    const normalizedOnchainArg = onchainArg && onchainArg.length ? onchainArg : null;
+    this.proposalData.proposal_arg_hash = normalizedOnchainArg || null;
+
+    const preferredArgCandidates = [
+      ...dashboardArgCandidates,
+      ...(normalizedOnchainArg ? [normalizedOnchainArg] : []),
+    ];
+
+    const arg = preferredArgCandidates.find((v) => v && !eq(v, wasm)) || preferredArgCandidates[0] || null;
 
     if (wasm) {
       this.proposalData.proposal_wasm_hash = wasm;
@@ -2026,10 +2174,8 @@ ${linuxVerify}</pre>
         this.expectedHash = wasm;
       }
     }
-    if (arg) {
-      this.proposalData.proposal_arg_hash = arg;
-      this.argHash = arg;
-    }
+
+    this.argHash = arg || null;
   }
 
   #computeReportHeaderDefaults() {
@@ -2116,6 +2262,20 @@ ${linuxVerify}</pre>
     applyAuto('sourceCommit');
     if (!installWasm) applyAuto('wasmHash');
     if (!installArg) applyAuto('argumentValue');
+
+    const payloadForReport =
+      typeof this.payloadSnippetFromDashboard === 'string'
+        ? this.payloadSnippetFromDashboard.trim()
+        : '';
+    if (payloadForReport) {
+      defaults.argumentValue = payloadForReport;
+      const inferredType = this.#inferDashboardPayloadType(payloadForReport);
+      if (inferredType) {
+        defaults.argumentType = inferredType;
+      } else if (!defaults.argumentType) {
+        defaults.argumentType = 'Text';
+      }
+    }
     applyAuto('proposer');
 
     if (!defaults.argumentType) {
@@ -2204,15 +2364,6 @@ ${linuxVerify}</pre>
       targetDisplay = targetName;
     }
 
-    let argumentDisplay = 'N/A';
-    if (argType !== 'N/A' && argValue !== 'N/A') {
-      argumentDisplay = `(${argType}) ${argValue}`;
-    } else if (argValue !== 'N/A') {
-      argumentDisplay = argValue;
-    } else if (argType !== 'N/A') {
-      argumentDisplay = `(${argType})`;
-    }
-
     const lines = [
       `**Proposal Verification Report - ${idDisplay} (${title})**`,
       `**Proposal Type:** ${typeDisplay}`,
@@ -2222,13 +2373,34 @@ ${linuxVerify}</pre>
       `**Source Repository:** ${repo}`,
       `**Source Commit:** ${commitDisplay}`,
       `**Proposed Wasm (gz) SHA-256:** ${wasmHash}`,
-      `**Argument Payload:** ${argumentDisplay}`,
+    ];
+
+    if (argValue !== 'N/A') {
+      if (/\n/.test(argValue)) {
+        const heading = argType !== 'N/A' ? `**Argument Payload:** (${argType})` : '**Argument Payload:**';
+        lines.push(heading);
+        const lowerType = argType.toLowerCase();
+        const fence = lowerType.includes('json') ? '```json' : '```';
+        lines.push(fence);
+        lines.push(argValue.trimEnd());
+        lines.push('```');
+      } else {
+        const prefix = argType !== 'N/A' ? `(${argType}) ` : '';
+        lines.push(`**Argument Payload:** ${prefix}${argValue}`);
+      }
+    } else if (argType !== 'N/A') {
+      lines.push(`**Argument Payload:** (${argType})`);
+    } else {
+      lines.push('**Argument Payload:** N/A');
+    }
+
+    lines.push(
       `**Proposer:** ${proposer}`,
       `**Verification Date:** ${verificationDate}`,
       `**Verified by:** ${verifiedBy}`,
       `**Generated by:** ${generatedBy}`,
       `**Links:** ${linkNns} • ${linkDashboard}`,
-    ];
+    );
 
     const notesTrimmed = typeof notes === 'string' ? notes.trim() : '';
     if (notesTrimmed) {
@@ -2281,6 +2453,7 @@ ${linuxVerify}</pre>
       expectedHashSource: this.expectedHashSource,
       argHashFromDashboard: this.argHash,
       payloadSnippet: this.payloadSnippetFromDashboard,
+      payloadSnippetRaw: this.payloadSnippetRawFromDashboard,
       dashboardUrl: this.dashboardUrl,
       extractedArgText: this.extractedArgText,
       verificationSteps: this.verificationSteps,
