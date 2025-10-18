@@ -42,6 +42,8 @@ const RELEASE_URL_RE =
 const CANDID_PATTERN =
   /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
 
+const LONG_SESSION_TTL = 365n * 24n * 60n * 60n * 1_000_000_000n; // one year in nanoseconds
+
 const DASHBOARD_LABEL_VARIANTS = {
   proposalType: ['proposal type'],
   targetCanister: ['target canister', 'canister', 'target canister id'],
@@ -607,6 +609,7 @@ class App {
   proposalData = null;
   fullProposalInfo = null; // NEW: raw ProposalInfo for export (.txt)
   reportOverrides = {};
+  reportNotes = '';
   reportHeaderAutofill = {};
   reportGenerationDate = '';
   commitStatus = '';
@@ -668,7 +671,12 @@ class App {
 
   async #initAuth() {
     try {
-      this.authClient = await AuthClient.create();
+      this.authClient = await AuthClient.create({
+        idleOptions: {
+          disableIdle: true,
+          disableDefaultIdleCallback: true,
+        },
+      });
       // Always have an actor (anon) so the app renders even pre-login
       this.backend = anon_backend;
       await this.#loadFees(); // fees are public query; attempt even anon
@@ -687,6 +695,7 @@ class App {
     try {
       await this.authClient.login({
         identityProvider: 'https://id.ai/#authorize',
+        maxTimeToLive: LONG_SESSION_TTL,
         onSuccess: async () => {
           try {
             await this.#onAuthenticated();
@@ -721,6 +730,7 @@ class App {
     this.reportOverrides = {};
     this.reportHeaderAutofill = {};
     this.reportGenerationDate = '';
+    this.reportNotes = '';
 
     // Clear deposit state
     this.depositOwner = null;
@@ -1064,6 +1074,7 @@ class App {
       // NEW: capture full raw ProposalInfo for export (.txt)
       this.fullProposalInfo = unwrap(data.fullProposalInfo);
       this.reportOverrides = {};
+      this.reportNotes = '';
 
       // Pull a recommended arg verification command from the summary (if present)
       this.recommendedArgCmd = extractArgVerificationCommand(this.proposalData.summary);
@@ -2082,7 +2093,7 @@ ${linuxVerify}</pre>
     }
 
     const lines = [
-      `Proposal Verification Report - ${idDisplay} (${title})`,
+      `**Proposal Verification Report - ${idDisplay} (${title})**`,
       `**Proposal Type:** ${typeDisplay}`,
       `**Target Canister:** ${targetDisplay}`,
       `**Controllers:** ${controllers}`,
@@ -2109,6 +2120,11 @@ ${linuxVerify}</pre>
       delete next[key];
     }
     this.reportOverrides = next;
+    this.#render();
+  }
+
+  #updateReportNotes(value) {
+    this.reportNotes = typeof value === 'string' ? value : '';
     this.#render();
   }
 
@@ -2148,6 +2164,7 @@ ${linuxVerify}</pre>
       fullProposalInfo: this.fullProposalInfo,
       reportHeader: headerFinal,
       reportHeaderDefaults: headerDefaults,
+      reportNotes: this.reportNotes?.trim() || '',
     };
   }
 
@@ -2192,6 +2209,9 @@ ${linuxVerify}</pre>
       .join('\n')}\n\n`;
     md += `## Steps/Tools\n- **Steps**: ${data.verificationSteps || 'N/A'}\n- **Tools**: ${data.requiredTools || 'N/A'}\n\n`;
     md += `## Rebuild Script\n\`\`\`bash\n${data.rebuildScript || 'N/A'}\n\`\`\`\n`;
+    if (data.reportNotes) {
+      md += `\n## Reviewer Notes\n${data.reportNotes}\n`;
+    }
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2637,6 +2657,20 @@ ${linuxVerify}</pre>
                         </div>
                       `
                     : html`<p>All summary fields were populated automatically.</p>`
+                  : ''}
+                ${this.proposalData
+                  ? html`
+                      <div class="report-notes">
+                        <label>
+                          <span>Reviewer Notes (optional)</span>
+                          <textarea
+                            .value=${this.reportNotes}
+                            placeholder="Add any remarks, concerns, or follow-up items for this proposal."
+                            @input=${(e) => this.#updateReportNotes(e.target.value)}
+                          ></textarea>
+                        </label>
+                      </div>
+                    `
                   : ''}
                 <div class="export-buttons">
                   <button class="btn" @click=${() => this.#handleExportJson()}>
