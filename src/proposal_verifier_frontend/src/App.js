@@ -1990,9 +1990,8 @@ ${linuxVerify}</pre>
       this.reportHeaderAutofill?.wasmHash,
       this.expectedHash,
     );
-    const argCandidates = candidateList(
-      installArg,
-      this.proposalData.proposal_arg_hash,
+    const onchainArgCandidates = candidateList(installArg, this.proposalData.proposal_arg_hash);
+    const dashboardArgCandidates = candidateList(
       this.reportHeaderAutofill?.argumentValue,
       this.argHash,
     );
@@ -2008,17 +2007,21 @@ ${linuxVerify}</pre>
       wasm = restore(installWasm);
     }
 
-    const argPreferred = argCandidates.find((v) => !eq(v, wasm));
-    let arg = argPreferred || (argCandidates.length ? argCandidates[0] : '');
-
     if (installWasm && !eq(wasm, installWasm)) {
       const installCandidate = restore(installWasm);
       if (installCandidate) wasm = installCandidate;
     }
-    if (installArg && !eq(arg, installArg)) {
-      const installCandidate = restore(installArg);
-      if (installCandidate) arg = installCandidate;
-    }
+
+    const onchainArg = onchainArgCandidates.length ? onchainArgCandidates[0] : null;
+    const normalizedOnchainArg = onchainArg && onchainArg.length ? onchainArg : null;
+    this.proposalData.proposal_arg_hash = normalizedOnchainArg || null;
+
+    const preferredArgCandidates = [
+      ...dashboardArgCandidates,
+      ...(normalizedOnchainArg ? [normalizedOnchainArg] : []),
+    ];
+
+    const arg = preferredArgCandidates.find((v) => v && !eq(v, wasm)) || preferredArgCandidates[0] || null;
 
     if (wasm) {
       this.proposalData.proposal_wasm_hash = wasm;
@@ -2026,10 +2029,8 @@ ${linuxVerify}</pre>
         this.expectedHash = wasm;
       }
     }
-    if (arg) {
-      this.proposalData.proposal_arg_hash = arg;
-      this.argHash = arg;
-    }
+
+    this.argHash = arg || null;
   }
 
   #computeReportHeaderDefaults() {
