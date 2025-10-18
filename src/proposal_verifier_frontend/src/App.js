@@ -1073,6 +1073,17 @@ class App {
 
       const extractedUrls = base.extractedUrls || [];
 
+      const billing = data.billingSnapshot;
+
+      if (billing) {
+        const remaining = Number(billing.remaining_balance_e8s ?? 0n);
+        const credited = Number(billing.credited_total_e8s ?? 0n);
+        this.userBalance = remaining;
+        this.depositLedgerBalance = remaining;
+        this.depositCreditedTotal = credited;
+        this.depositAvailableToCredit = Math.max(0, remaining - credited);
+      }
+
       this.proposalData = {
         id: Number(base.id),
         summary: base.summary,
@@ -1181,10 +1192,6 @@ class App {
 
       // NEW: set interactive type checklist items
       this.typeChecklistItems = TYPE_CHECKLISTS.get(this.proposalData?.proposalType) || [];
-
-      // Reflect billed deduction and refresh deposit status
-      await this.#refreshBalance();
-      await this.#loadDepositStatus();
 
       if (typeof this.backend.getLastFetchCyclesBurned === 'function') {
         try {
