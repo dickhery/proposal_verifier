@@ -881,6 +881,7 @@ class App {
       const res = await this.backend.recordDepositAuto();
       if (res.ok !== undefined) {
         const r = res.ok;
+        const deltaE8s = Number(r.credited_delta_e8s || 0);
         this.userBalance = Number(r.total_internal_balance_e8s || 0);
         this.depositLedgerBalance = Number(r.ledger_balance_e8s || 0);
         this.depositCreditedTotal = Number(r.credited_total_e8s || 0);
@@ -888,11 +889,9 @@ class App {
           0,
           this.depositLedgerBalance - this.depositCreditedTotal,
         );
-        if (!silent) {
+        if (!silent && deltaE8s > 0) {
           alert(
-            `Credited ${(Number(r.credited_delta_e8s) / 1e8).toFixed(
-              8,
-            )} ICP from your ledger subaccount.`,
+            `Credited ${(deltaE8s / 1e8).toFixed(8)} ICP from your ledger subaccount.`,
           );
         }
         await this.#refreshBalance();

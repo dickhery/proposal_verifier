@@ -251,7 +251,7 @@ persistent actor verifier {
     depositCache := arr;
   };
 
-  // ---- NEW: track how much on-chain balance we've already credited per user ----
+  // ---- Track the last observed ledger balance per user (for delta detection) ----
   stable var creditedByUser : [(Principal, Nat64)] = [];
 
   func getCredited(p : Principal) : Nat64 {
@@ -457,7 +457,13 @@ persistent actor verifier {
 
     // NEW: actually deduct the fee from the user's subaccount and forward it
     switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
-      case (#ok(())) { #ok(()) };
+      case (#ok(())) {
+        let remainingNat : Nat = ledgerBalNat - Nat64.toNat(totalNeeded);
+        let remaining64 : Nat64 = Nat64.fromNat(remainingNat);
+        setBalanceInternal(caller, remaining64);
+        setCredited(caller, remaining64);
+        #ok(())
+      };
       case (#err(msg)) { #err("Unable to collect fee for " # purpose # ": " # msg) };
     };
   };
@@ -489,24 +495,25 @@ persistent actor verifier {
         owner = owner;
         subaccount = ?sub;
       });
-      let prevCredited : Nat64 = getCredited(caller);
 
-      if (balNat <= Nat64.toNat(prevCredited)) {
-        return #err("No new deposits detected on your subaccount.");
+      let bal64 : Nat64 = Nat64.fromNat(balNat);
+      let prevSeen : Nat64 = getCredited(caller);
+
+      let delta64 : Nat64 = if (bal64 > prevSeen) {
+        bal64 - prevSeen;
+      } else {
+        0;
       };
 
-      let deltaNat : Nat = balNat - Nat64.toNat(prevCredited);
-      let delta64 : Nat64 = Nat64.fromNat(deltaNat);
-
-      // Credit the delta internally and advance the credited marker
-      addBalanceInternal(caller, delta64);
-      setCredited(caller, prevCredited + delta64);
+      // Cache the latest ledger balance for this caller
+      setBalanceInternal(caller, bal64);
+      setCredited(caller, bal64);
 
       #ok({
         credited_delta_e8s = delta64;
-        total_internal_balance_e8s = getBalanceInternal(caller);
+        total_internal_balance_e8s = bal64;
         ledger_balance_e8s = balNat;
-        credited_total_e8s = prevCredited + delta64;
+        credited_total_e8s = bal64;
       });
     } catch (e) {
       #err("Ledger query failed: " # Error.message(e));
@@ -589,11 +596,13 @@ persistent actor verifier {
       };
       cacheUpsert({ memo = memoKey; amount_e8s = amount_e8s; timestamp = now });
 
-      addBalanceInternal(caller, amount_e8s);
-      // NEW: also advance the credited marker so auto-credit uses deltas correctly
-      let prev = getCredited(caller);
-      setCredited(caller, prev + amount_e8s);
+      let bal64 : Nat64 = Nat64.fromNat(balNat);
 
+      // Align the cached balance with the on-chain subaccount
+      setBalanceInternal(caller, bal64);
+      setCredited(caller, bal64);
+
+      // Maintain backwards-compatible return value (total cached balance)
       #ok(getBalanceInternal(caller));
     } catch (e) {
       #err("Ledger query failed: " # Error.message(e));
