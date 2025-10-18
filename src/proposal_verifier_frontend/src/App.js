@@ -135,6 +135,27 @@ function findFirstStringValue(node, keys = []) {
   return '';
 }
 
+function isLikelyBareIdentifier(value) {
+  if (!value) return true;
+  const trimmed = String(value).trim();
+  if (!trimmed) return true;
+  if (/^n\/?a$/i.test(trimmed)) return true;
+  if (/^\d+$/.test(trimmed)) return true;
+  // Principal text representations are base32-ish with hyphens and at least 27 chars
+  if (/^[a-z0-9-]{27,63}$/i.test(trimmed) && trimmed.includes('-')) {
+    return true;
+  }
+  return false;
+}
+
+function extractProposerFromSummary(summary) {
+  if (!summary || typeof summary !== 'string') return '';
+  const match = summary.match(/proposer\s*[:：]\s*([^\n\r]+)/i);
+  if (!match) return '';
+  const value = cleanDashboardValue(match[1]);
+  return value;
+}
+
 function extractDashboardReportFields(rawText) {
   if (!rawText || typeof rawText !== 'string') return {};
   let parsed;
@@ -1294,19 +1315,29 @@ class App {
 
       this.#resolveHashesFromSources();
 
-      // Commit check: backend first, then browser fallback
+      // Commit check: prefer browser request to avoid burning canister cycles
       this.commitStatus = '';
       const repo = this.proposalData.extractedRepo || 'dfinity/ic';
       const commit = this.proposalData.extractedCommit || '';
       if (commit) {
-        const commitResult = await this.backend.checkGitCommit(repo, commit);
-        if (commitResult.ok) {
-          this.commitStatus = `✅ Commit exists on ${repo}@${commit.substring(0, 12)}`;
+        const shortCommit = commit.substring(0, 12);
+        const browserOk = await this.#checkCommitInBrowser(repo, commit);
+        if (browserOk) {
+          this.commitStatus = `✅ Commit exists on ${repo}@${shortCommit} (browser)`;
+        } else if (typeof this.backend.checkGitCommit === 'function') {
+          try {
+            const commitResult = await this.backend.checkGitCommit(repo, commit);
+            if (commitResult.ok) {
+              this.commitStatus = `✅ Commit exists on ${repo}@${shortCommit} (canister)`;
+            } else {
+              this.commitStatus = `❌ ${commitResult.err || 'Commit not found'}`;
+            }
+          } catch (commitErr) {
+            const message = commitErr?.message || 'Unable to verify commit via canister';
+            this.commitStatus = `❌ ${message}`;
+          }
         } else {
-          const ok = await this.#checkCommitInBrowser(repo, commit);
-          this.commitStatus = ok
-            ? `✅ Commit exists on ${repo}@${commit.substring(0, 12)} (browser fallback)`
-            : `❌ ${commitResult.err || 'Commit not found'}`;
+          this.commitStatus = '⚠️ Unable to verify commit (canister method unavailable)';
         }
       } else {
         this.commitStatus = '❌ No commit found in summary';
@@ -2278,6 +2309,13 @@ ${linuxVerify}</pre>
     }
     applyAuto('proposer');
 
+    if (isLikelyBareIdentifier(defaults.proposer)) {
+      const detailedProposer = extractProposerFromSummary(p.summary);
+      if (detailedProposer) {
+        defaults.proposer = detailedProposer;
+      }
+    }
+
     if (!defaults.argumentType) {
       if (this.extractedArgText) {
         defaults.argumentType = 'Candid';
@@ -2478,7 +2516,11 @@ ${linuxVerify}</pre>
       alert('No proposal data to export.');
       return;
     }
-    const json = JSON.stringify(data, null, 2);
+    const json = JSON.stringify(
+      data,
+      (key, value) => (typeof value === 'bigint' ? value.toString() : value),
+      2,
+    );
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
