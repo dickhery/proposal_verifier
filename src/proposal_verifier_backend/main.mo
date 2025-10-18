@@ -176,6 +176,9 @@ persistent actor verifier {
   // ICP transfer fee (e8s) for legacy ledger transfer
   let TRANSFER_FEE_E8S : Nat64 = 10_000; // 0.0001 ICP
 
+  // Cycles reserved for HTTPS outcalls (5B covers ~2 MB responses comfortably)
+  let HTTP_OUTCALL_CYCLES : Nat = 5_000_000_000;
+
   // Very small, persistent balance map (Principal -> e8s).
   // Simple array-based storage to keep stability trivial.
   var balances : [(Principal, Nat64)] = [];
@@ -189,6 +192,16 @@ persistent actor verifier {
   stable var depositCache : [DepositCacheEntry] = [];
   stable var lastFetchCyclesBurned : Nat = 0;
   let DEPOSIT_CACHE_MAX : Nat = 128;
+
+  // Small in-memory cache for ic-api proposal JSON to avoid repeated outcalls
+  type IcApiCacheEntry = {
+    id : Nat64;
+    payload : Text;
+    fetchedAt : Time.Time;
+  };
+  var icApiCache : [IcApiCacheEntry] = [];
+  let IC_API_CACHE_LIMIT : Nat = 16;
+  let IC_API_CACHE_TTL_NS : Int = 5 * 60 * 1_000_000_000;
 
   func cacheGet(memo : Nat64) : ?DepositCacheEntry {
     for (e in depositCache.vals()) {
@@ -254,6 +267,60 @@ persistent actor verifier {
     };
     if (not found) { buf.add((p, v)) };
     creditedByUser := Buffer.toArray(buf);
+  };
+
+  func pruneIcApiCache(now : Time.Time) {
+    let buf = Buffer.Buffer<IcApiCacheEntry>(Array.size(icApiCache));
+    for (entry in icApiCache.vals()) {
+      if (now - entry.fetchedAt <= IC_API_CACHE_TTL_NS) { buf.add(entry) };
+    };
+    icApiCache := Buffer.toArray(buf);
+  };
+
+  func icApiCacheLookup(id : Nat64) : ?IcApiCacheEntry {
+    for (entry in icApiCache.vals()) {
+      if (entry.id == id) { return ?entry };
+    };
+    null;
+  };
+
+  func icApiCacheStore(id : Nat64, payload : Text, timestamp : Time.Time) {
+    let buf = Buffer.Buffer<IcApiCacheEntry>(Array.size(icApiCache));
+    var replaced = false;
+    for (entry in icApiCache.vals()) {
+      if (entry.id == id) {
+        buf.add({ id = id; payload = payload; fetchedAt = timestamp });
+        replaced := true;
+      } else {
+        buf.add(entry);
+      };
+    };
+    if (not replaced) {
+      buf.add({ id = id; payload = payload; fetchedAt = timestamp });
+    };
+
+    var arr = Buffer.toArray(buf);
+    if (Array.size(arr) > IC_API_CACHE_LIMIT) {
+      var oldestIdx : Nat = 0;
+      var oldestTs : Time.Time = arr[0].fetchedAt;
+      var i : Nat = 1;
+      while (i < Array.size(arr)) {
+        if (arr[i].fetchedAt < oldestTs) {
+          oldestTs := arr[i].fetchedAt;
+          oldestIdx := i;
+        };
+        i += 1;
+      };
+      let trimmed = Buffer.Buffer<IcApiCacheEntry>(Array.size(arr) - 1);
+      var j : Nat = 0;
+      while (j < Array.size(arr)) {
+        if (j != oldestIdx) { trimmed.add(arr[j]) };
+        j += 1;
+      };
+      arr := Buffer.toArray(trimmed);
+    };
+
+    icApiCache := arr;
   };
 
   // Beneficiary Account Identifier (32 bytes) where fees are forwarded
@@ -973,9 +1040,14 @@ persistent actor verifier {
   // -----------------------------
   // Core getters (authenticated + billed)
   // -----------------------------
-  func getProposalInternal(id : Nat64, caller : Principal) : async Result.Result<SimplifiedProposalInfo, Text> {
+  type ProposalInternalBundle = {
+    base : SimplifiedProposalInfo;
+    full : ?GovernanceTypes.ProposalInfo;
+  };
+
+  func getProposalInternal(id : Nat64, caller : Principal) : async Result.Result<ProposalInternalBundle, Text> {
     let cyclesBefore = Cycles.balance();
-    func finish(res : Result.Result<SimplifiedProposalInfo, Text>) : Result.Result<SimplifiedProposalInfo, Text> {
+    func finish(res : Result.Result<ProposalInternalBundle, Text>) : Result.Result<ProposalInternalBundle, Text> {
       let cyclesAfter = Cycles.balance();
       if (cyclesBefore > cyclesAfter) {
         lastFetchCyclesBurned := cyclesBefore - cyclesAfter;
@@ -1063,7 +1135,7 @@ persistent actor verifier {
                 case _ {};
               };
 
-              finish(#ok({
+              let baseInfo : SimplifiedProposalInfo = {
                 id = pid.id;
                 summary = summary;
                 url = proposal.url;
@@ -1079,7 +1151,9 @@ persistent actor verifier {
                 extractedDocs;
                 proposal_arg_hash;
                 proposal_wasm_hash;
-              }));
+              };
+
+              finish(#ok({ base = baseInfo; full = ?info }));
             };
             case _ { finish(#err("Proposal missing summary data")) };
           };
@@ -1091,7 +1165,10 @@ persistent actor verifier {
   };
 
   public shared ({ caller }) func getProposal(id : Nat64) : async Result.Result<SimplifiedProposalInfo, Text> {
-    await getProposalInternal(id, caller);
+    switch (await getProposalInternal(id, caller)) {
+      case (#err(e)) { #err(e) };
+      case (#ok(res)) { #ok(res.base) };
+    };
   };
 
   // Commit existence check (GitHub) - only if repo/commit present
@@ -1126,7 +1203,7 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(100_000_000_000);
+    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
     try {
       let response = await Management.http_request(request);
       if (response.status == 200) {
@@ -1166,7 +1243,7 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(100_000_000_000);
+    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
     try {
       let response = await Management.http_request(request);
       if (response.status == 200) {
@@ -1217,6 +1294,13 @@ persistent actor verifier {
   func fetchIcApiProposalJsonText(id : Nat64, caller : Principal) : async ?Text {
     // (bill once in getProposal; do NOT bill again here)
 
+    let now = Time.now();
+    pruneIcApiCache(now);
+    switch (icApiCacheLookup(id)) {
+      case (?entry) { return ?entry.payload };
+      case null {};
+    };
+
     let url = "https://ic-api.internetcomputer.org/api/v3/proposals/" # Nat64.toText(id);
     let req : HttpRequestArgs = {
       url = url;
@@ -1236,11 +1320,17 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(100_000_000_000);
+    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
     try {
       let resp = await Management.http_request(req);
       if (resp.status == 200) {
-        switch (Text.decodeUtf8(resp.body)) { case (?t) ?t; case null null };
+        switch (Text.decodeUtf8(resp.body)) {
+          case (?t) {
+            icApiCacheStore(id, t, Time.now());
+            ?t;
+          };
+          case null null;
+        };
       } else { null };
     } catch (e) { null };
   };
@@ -1351,7 +1441,8 @@ persistent actor verifier {
   public shared ({ caller }) func getProposalAugmented(id : Nat64) : async Result.Result<AugmentedProposalInfo, Text> {
     switch (await getProposalInternal(id, caller)) {
       case (#err(e)) { #err(e) };
-      case (#ok(base)) {
+      case (#ok(bundle)) {
+        let base = bundle.base;
         let dashboardUrl = "https://dashboard.internetcomputer.org/proposal/" # Nat64.toText(id);
 
         var expected : ?Text = null;
@@ -1379,14 +1470,7 @@ persistent actor verifier {
         let steps = getVerificationSteps(base.proposalType);
         let tools = getRequiredTools(base.proposalType);
 
-        // NEW: fetch raw full ProposalInfo for export (separate call, no extra billing)
-        var fullInfoOpt : ?GovernanceTypes.ProposalInfo = null;
-        try {
-          fullInfoOpt := await governance.get_proposal_info(id);
-        } catch (e) {
-          // best-effort: leave as null on failure
-          fullInfoOpt := null;
-        };
+        let fullInfoOpt = bundle.full;
 
         #ok({
           base;
