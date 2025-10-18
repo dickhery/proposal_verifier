@@ -135,6 +135,27 @@ function findFirstStringValue(node, keys = []) {
   return '';
 }
 
+function isLikelyBareIdentifier(value) {
+  if (!value) return true;
+  const trimmed = String(value).trim();
+  if (!trimmed) return true;
+  if (/^n\/?a$/i.test(trimmed)) return true;
+  if (/^\d+$/.test(trimmed)) return true;
+  // Principal text representations are base32-ish with hyphens and at least 27 chars
+  if (/^[a-z0-9-]{27,63}$/i.test(trimmed) && trimmed.includes('-')) {
+    return true;
+  }
+  return false;
+}
+
+function extractProposerFromSummary(summary) {
+  if (!summary || typeof summary !== 'string') return '';
+  const match = summary.match(/proposer\s*[:：]\s*([^\n\r]+)/i);
+  if (!match) return '';
+  const value = cleanDashboardValue(match[1]);
+  return value;
+}
+
 function extractDashboardReportFields(rawText) {
   if (!rawText || typeof rawText !== 'string') return {};
   let parsed;
@@ -2287,6 +2308,13 @@ ${linuxVerify}</pre>
       }
     }
     applyAuto('proposer');
+
+    if (isLikelyBareIdentifier(defaults.proposer)) {
+      const detailedProposer = extractProposerFromSummary(p.summary);
+      if (detailedProposer) {
+        defaults.proposer = detailedProposer;
+      }
+    }
 
     if (!defaults.argumentType) {
       if (this.extractedArgText) {
