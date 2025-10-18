@@ -657,6 +657,8 @@ class App {
     manual: false, // for types that require manual review
   };
 
+  checklistManualOverrides = {};
+
   // URL/text fetch verification
   docHashMatch = undefined;
   docHashError = '';
@@ -731,6 +733,7 @@ class App {
     this.reportHeaderAutofill = {};
     this.reportGenerationDate = '';
     this.reportNotes = '';
+    this.checklistManualOverrides = {};
 
     // Clear deposit state
     this.depositOwner = null;
@@ -878,6 +881,7 @@ class App {
       const res = await this.backend.recordDepositAuto();
       if (res.ok !== undefined) {
         const r = res.ok;
+        const deltaE8s = Number(r.credited_delta_e8s || 0);
         this.userBalance = Number(r.total_internal_balance_e8s || 0);
         this.depositLedgerBalance = Number(r.ledger_balance_e8s || 0);
         this.depositCreditedTotal = Number(r.credited_total_e8s || 0);
@@ -885,11 +889,9 @@ class App {
           0,
           this.depositLedgerBalance - this.depositCreditedTotal,
         );
-        if (!silent) {
+        if (!silent && deltaE8s > 0) {
           alert(
-            `Credited ${(Number(r.credited_delta_e8s) / 1e8).toFixed(
-              8,
-            )} ICP from your ledger subaccount.`,
+            `Credited ${(deltaE8s / 1e8).toFixed(8)} ICP from your ledger subaccount.`,
           );
         }
         await this.#refreshBalance();
@@ -915,16 +917,36 @@ class App {
   }
 
   #updateChecklist() {
-    this.checklist = {
+    const base = {
       fetch: !!this.proposalData,
       commit: this.commitStatus.startsWith('✅'),
       argsHash: this.hashMatch,
       docHash: this.docResults.every((r) => r.match),
       expected: !!this.expectedHash,
-      rebuild: this.checklist.rebuild || false,
-      manual: this.checklist.manual || false,
+      rebuild: false,
+      manual: false,
     };
+    const overrides = this.checklistManualOverrides || {};
+    for (const [key, value] of Object.entries(overrides)) {
+      if (typeof value === 'boolean') {
+        base[key] = value;
+      }
+    }
+    this.checklist = base;
     this.#updateTypeChecklist();
+  }
+
+  #setChecklistOverride(key, value) {
+    if (!key) return;
+    const next = { ...this.checklistManualOverrides };
+    if (typeof value === 'boolean') {
+      next[key] = value;
+    } else {
+      delete next[key];
+    }
+    this.checklistManualOverrides = next;
+    this.#updateChecklist();
+    this.#render();
   }
 
   async #handleCopy(e, text, originalLabel) {
@@ -1075,6 +1097,9 @@ class App {
       this.fullProposalInfo = unwrap(data.fullProposalInfo);
       this.reportOverrides = {};
       this.reportNotes = '';
+      this.checklistManualOverrides = {};
+
+      this.#resolveHashesFromSources();
 
       // Pull a recommended arg verification command from the summary (if present)
       this.recommendedArgCmd = extractArgVerificationCommand(this.proposalData.summary);
@@ -1114,7 +1139,11 @@ class App {
         this.argInputCurrent = '';
       }
 
+      this.#resolveHashesFromSources();
+
       await this.#prefillFromIcApi(id);
+
+      this.#resolveHashesFromSources();
 
       // Commit check: backend first, then browser fallback
       this.commitStatus = '';
@@ -1810,9 +1839,7 @@ ${linuxVerify}</pre>
         <button
           class="btn secondary"
           @click=${() => {
-            this.checklist.rebuild = true;
-            this.#updateChecklist();
-            this.#render();
+            this.#setChecklistOverride('rebuild', true);
           }}
         >
           Mark Rebuild Done
@@ -1921,6 +1948,90 @@ ${linuxVerify}</pre>
     return null;
   }
 
+  #extractInstallCodeHashes(fullInfo) {
+    const install = this.#extractInstallCodeAction(fullInfo);
+    const toHex = (value) => {
+      if (!value) return '';
+      const bytes = this.#nat8ArrayToUint8Array(value);
+      return bytes ? bytesToHex(bytes) : '';
+    };
+    if (!install) {
+      return { wasm: '', arg: '' };
+    }
+    const wasm = toHex(install.wasm_module_hash?.[0]);
+    const arg = toHex(install.arg_hash?.[0]);
+    return { wasm, arg };
+  }
+
+  #resolveHashesFromSources() {
+    if (!this.proposalData) return;
+
+    const { wasm: installWasm, arg: installArg } = this.#extractInstallCodeHashes(
+      this.fullProposalInfo,
+    );
+
+    const normalize = (value) => {
+      if (!value) return '';
+      const str = String(value).trim();
+      return looksLikeHexString(str) ? str.toLowerCase() : str;
+    };
+    const restore = (value) => {
+      if (!value) return '';
+      return String(value).trim();
+    };
+
+    const candidateList = (...values) => values.map(restore).filter((v) => v && v.length);
+
+    const eq = (a, b) => normalize(a) === normalize(b);
+
+    const wasmCandidates = candidateList(
+      installWasm,
+      this.proposalData.proposal_wasm_hash,
+      this.reportHeaderAutofill?.wasmHash,
+      this.expectedHash,
+    );
+    const argCandidates = candidateList(
+      installArg,
+      this.proposalData.proposal_arg_hash,
+      this.reportHeaderAutofill?.argumentValue,
+      this.argHash,
+    );
+
+    let wasm = wasmCandidates.find((v) => v.length) || '';
+
+    if (
+      installWasm &&
+      installArg &&
+      eq(this.proposalData.proposal_wasm_hash, installArg) &&
+      eq(this.proposalData.proposal_arg_hash, installWasm)
+    ) {
+      wasm = restore(installWasm);
+    }
+
+    const argPreferred = argCandidates.find((v) => !eq(v, wasm));
+    let arg = argPreferred || (argCandidates.length ? argCandidates[0] : '');
+
+    if (installWasm && !eq(wasm, installWasm)) {
+      const installCandidate = restore(installWasm);
+      if (installCandidate) wasm = installCandidate;
+    }
+    if (installArg && !eq(arg, installArg)) {
+      const installCandidate = restore(installArg);
+      if (installCandidate) arg = installCandidate;
+    }
+
+    if (wasm) {
+      this.proposalData.proposal_wasm_hash = wasm;
+      if (!this.expectedHash || eq(this.expectedHash, this.proposalData.proposal_arg_hash)) {
+        this.expectedHash = wasm;
+      }
+    }
+    if (arg) {
+      this.proposalData.proposal_arg_hash = arg;
+      this.argHash = arg;
+    }
+  }
+
   #computeReportHeaderDefaults() {
     const p = this.proposalData;
     if (!p) return null;
@@ -1937,9 +2048,9 @@ ${linuxVerify}</pre>
       sourceRepository: p.extractedRepo || '',
       sourceCommit: p.extractedCommit || '',
       sourceCommitUrl: p.commitUrl || '',
-      wasmHash: p.proposal_wasm_hash || this.expectedHash || '',
+      wasmHash: p.proposal_wasm_hash || '',
       argumentType: '',
-      argumentValue: p.proposal_arg_hash || this.argHash || '',
+      argumentValue: p.proposal_arg_hash || '',
       proposer: '',
       verificationDate: '',
       verifiedBy: '',
@@ -1970,21 +2081,31 @@ ${linuxVerify}</pre>
     applyAuto('proposalCategory');
     applyAuto('proposalAction');
 
+    const { wasm: installWasm, arg: installArg } = this.#extractInstallCodeHashes(
+      this.fullProposalInfo,
+    );
+
     const installCode = this.#extractInstallCodeAction(this.fullProposalInfo);
     if (installCode) {
       const canisterPrincipal = installCode.canister_id?.[0];
       const canisterText = this.#principalToText(canisterPrincipal);
       if (canisterText) defaults.targetCanisterId = canisterText;
+    }
 
-      if (!defaults.wasmHash && installCode.wasm_module_hash?.[0]) {
-        const wasmArray = this.#nat8ArrayToUint8Array(installCode.wasm_module_hash[0]);
-        if (wasmArray) defaults.wasmHash = bytesToHex(wasmArray);
-      }
+    if (installWasm) {
+      defaults.wasmHash = installWasm;
+    } else if (!defaults.wasmHash && this.reportHeaderAutofill?.wasmHash) {
+      defaults.wasmHash = this.reportHeaderAutofill.wasmHash;
+    } else if (!defaults.wasmHash && this.expectedHash) {
+      defaults.wasmHash = this.expectedHash;
+    }
 
-      if (!defaults.argumentValue && installCode.arg_hash?.[0]) {
-        const argArray = this.#nat8ArrayToUint8Array(installCode.arg_hash[0]);
-        if (argArray) defaults.argumentValue = bytesToHex(argArray);
-      }
+    if (installArg) {
+      defaults.argumentValue = installArg;
+    } else if (!defaults.argumentValue && this.reportHeaderAutofill?.argumentValue) {
+      defaults.argumentValue = this.reportHeaderAutofill.argumentValue;
+    } else if (!defaults.argumentValue && this.argHash) {
+      defaults.argumentValue = this.argHash;
     }
 
     applyAuto('targetCanisterId');
@@ -1993,8 +2114,8 @@ ${linuxVerify}</pre>
     applyAuto('subnetId');
     applyAuto('sourceRepository');
     applyAuto('sourceCommit');
-    applyAuto('wasmHash');
-    applyAuto('argumentValue');
+    if (!installWasm) applyAuto('wasmHash');
+    if (!installArg) applyAuto('argumentValue');
     applyAuto('proposer');
 
     if (!defaults.argumentType) {
@@ -2028,7 +2149,7 @@ ${linuxVerify}</pre>
     return final;
   }
 
-  #formatReportHeaderMarkdown(final, defaults = {}) {
+  #formatReportHeaderMarkdown(final, defaults = {}, notes = '') {
     if (!final) return '';
     const valueOrNA = (value) => {
       if (value === null || value === undefined) return 'N/A';
@@ -2108,6 +2229,16 @@ ${linuxVerify}</pre>
       `**Generated by:** ${generatedBy}`,
       `**Links:** ${linkNns} • ${linkDashboard}`,
     ];
+
+    const notesTrimmed = typeof notes === 'string' ? notes.trim() : '';
+    if (notesTrimmed) {
+      lines.push('**Reviewer Notes:**');
+      const noteLines = notesTrimmed.split(/\r?\n/);
+      noteLines.forEach((line) => {
+        const content = line.trim();
+        lines.push(content ? `> ${content}` : '>');
+      });
+    }
 
     return lines.join('\n');
   }
@@ -2194,6 +2325,7 @@ ${linuxVerify}</pre>
     const headerText = this.#formatReportHeaderMarkdown(
       data.reportHeader,
       data.reportHeaderDefaults,
+      data.reportNotes,
     );
     let md = headerText ? `${headerText}\n\n---\n\n` : '';
     md += `# Proposal ${data.id} Verification Report\n\n`;
@@ -2204,14 +2336,15 @@ ${linuxVerify}</pre>
     md += `## Documents\n${(data.extractedDocs || [])
       .map((d) => `- ${d.name}: ${d.hash || 'N/A'}`)
       .join('\n') || 'None'}\n\n`;
-    md += `## Checklist\n${Object.entries(data.checklist)
+    const checklistEntries = Object.entries(data.checklist || {}).filter(
+      ([key]) => key !== 'manual',
+    );
+    const checklistSection = checklistEntries
       .map(([k, v]) => `- ${k}: ${v ? '✅' : '❌'}`)
-      .join('\n')}\n\n`;
+      .join('\n');
+    md += `## Checklist\n${checklistSection || 'None'}\n\n`;
     md += `## Steps/Tools\n- **Steps**: ${data.verificationSteps || 'N/A'}\n- **Tools**: ${data.requiredTools || 'N/A'}\n\n`;
     md += `## Rebuild Script\n\`\`\`bash\n${data.rebuildScript || 'N/A'}\n\`\`\`\n`;
-    if (data.reportNotes) {
-      md += `\n## Reviewer Notes\n${data.reportNotes}\n`;
-    }
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2262,7 +2395,7 @@ ${linuxVerify}</pre>
     const headerDefaults = p ? this.#computeReportHeaderDefaults() || {} : null;
     const headerFinal = headerDefaults ? this.#applyReportOverrides(headerDefaults) : null;
     const headerPreview = headerDefaults
-      ? this.#formatReportHeaderMarkdown(headerFinal, headerDefaults)
+      ? this.#formatReportHeaderMarkdown(headerFinal, headerDefaults, this.reportNotes)
       : '';
     const manualReportInputs = headerDefaults
       ? REPORT_HEADER_INPUTS.filter((field) => {
@@ -2609,10 +2742,7 @@ ${linuxVerify}</pre>
                               <input
                                 type="checkbox"
                                 ?checked=${this.checklist[item.key] || false}
-                                @change=${(e) => {
-                                  this.checklist[item.key] = e.target.checked;
-                                  this.#render();
-                                }}
+                                @change=${(e) => this.#setChecklistOverride(item.key, e.target.checked)}
                               />
                               ${item.label}
                             </label>
