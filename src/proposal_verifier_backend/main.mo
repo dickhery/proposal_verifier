@@ -201,7 +201,10 @@ persistent actor verifier {
   };
   stable var depositCache : [DepositCacheEntry] = [];
   stable var lastFetchCyclesBurned : Nat = 0;
+  stable var fetchCyclesHistory : [Nat] = [];
+  stable var fetchCyclesTotal : Nat = 0;
   let DEPOSIT_CACHE_MAX : Nat = 128;
+  let FETCH_CYCLE_HISTORY_LIMIT : Nat = 100;
 
   // Small in-memory cache for ic-api proposal JSON to avoid repeated outcalls
   type IcApiCacheEntry = {
@@ -259,6 +262,35 @@ persistent actor verifier {
     };
 
     depositCache := arr;
+  };
+
+  func recordFetchCyclesBurned(cycles : Nat) {
+    var current = fetchCyclesHistory;
+    if (Array.size(current) >= FETCH_CYCLE_HISTORY_LIMIT) {
+      if (Array.size(current) > 0) {
+        let oldest = current[0];
+        if (fetchCyclesTotal >= oldest) {
+          fetchCyclesTotal := fetchCyclesTotal - oldest;
+        } else {
+          fetchCyclesTotal := 0;
+        };
+      };
+      let dropBuf = Buffer.Buffer<Nat>(Array.size(current) - 1);
+      var idx : Nat = 1;
+      while (idx < Array.size(current)) {
+        dropBuf.add(current[idx]);
+        idx += 1;
+      };
+      current := Buffer.toArray(dropBuf);
+    };
+
+    let buf = Buffer.Buffer<Nat>(Array.size(current) + 1);
+    for (val in current.vals()) {
+      buf.add(val);
+    };
+    buf.add(cycles);
+    fetchCyclesHistory := Buffer.toArray(buf);
+    fetchCyclesTotal := fetchCyclesTotal + cycles;
   };
 
   // ---- Track the last observed ledger balance per user (for delta detection) ----
@@ -1081,10 +1113,14 @@ persistent actor verifier {
     };
     func finish(res : Result.Result<ProposalInternalBundle, Text>) : Result.Result<ProposalInternalBundle, Text> {
       let cyclesAfter = Cycles.balance();
+      var burned : Nat = 0;
       if (cyclesBefore > cyclesAfter) {
-        lastFetchCyclesBurned := cyclesBefore - cyclesAfter;
-      } else {
-        lastFetchCyclesBurned := 0;
+        burned := cyclesBefore - cyclesAfter;
+      };
+      lastFetchCyclesBurned := burned;
+      switch (res) {
+        case (#ok(_)) { recordFetchCyclesBurned(burned) };
+        case (#err(_)) {};
       };
       res
     };
@@ -1542,6 +1578,12 @@ persistent actor verifier {
   // -----------------------------
   public query func getLastFetchCyclesBurned() : async Nat {
     lastFetchCyclesBurned;
+  };
+
+  public query func getFetchCycleStats() : async { last : Nat; average : Nat; count : Nat } {
+    let count = Array.size(fetchCyclesHistory);
+    let average = if (count == 0) { 0 } else { fetchCyclesTotal / count };
+    { last = lastFetchCyclesBurned; average = average; count = count };
   };
 
   public query func getCycleBalance() : async Nat {

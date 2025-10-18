@@ -642,6 +642,8 @@ class App {
   isVerifyingArgs = false;
   cycleBalance = null;
   lastFetchCyclesBurned = null;
+  fetchCyclesAverage = null;
+  fetchCyclesCount = 0;
 
   expectedHash = null; // expected wasm/release hash (from sources)
   expectedHashSource = null;
@@ -766,6 +768,8 @@ class App {
     this.depositAvailableToCredit = 0;
 
     this.lastFetchCyclesBurned = null;
+    this.fetchCyclesAverage = null;
+    this.fetchCyclesCount = 0;
     // Also clear the cached owner blob used by utils.principalToAccountIdentifier
     try {
       // eslint-disable-next-line no-undef
@@ -791,6 +795,7 @@ class App {
     await this.#loadFees();
     // NEW: get owner/subaccount + live ledger/credited status
     await this.#loadDepositStatus();
+    await this.#loadCycleStats();
   }
 
   async #refreshBalance() {
@@ -888,6 +893,42 @@ class App {
       this.depositOwner = null;
       this.depositSubaccountHex = null;
       this.depositAccountIdentifierHex = null;
+    }
+  }
+
+  async #loadCycleStats() {
+    if (typeof this.backend?.getFetchCycleStats === 'function') {
+      try {
+        const stats = await this.backend.getFetchCycleStats();
+        this.lastFetchCyclesBurned = stats?.last ?? null;
+        const rawCount = stats?.count ?? 0n;
+        const countNumber = Number(rawCount);
+        this.fetchCyclesCount = Number.isFinite(countNumber) ? countNumber : 0;
+        this.fetchCyclesAverage = this.fetchCyclesCount > 0 ? stats?.average ?? null : null;
+        return;
+      } catch (err) {
+        const message = err?.message || 'Unavailable';
+        this.lastFetchCyclesBurned = message;
+        this.fetchCyclesAverage = message;
+        this.fetchCyclesCount = 0;
+        return;
+      }
+    }
+
+    this.fetchCyclesCount = 0;
+    if (typeof this.backend?.getLastFetchCyclesBurned === 'function') {
+      try {
+        const burned = await this.backend.getLastFetchCyclesBurned();
+        this.lastFetchCyclesBurned = burned;
+        this.fetchCyclesAverage = null;
+      } catch (cyclesErr) {
+        const message = cyclesErr?.message || 'Unavailable';
+        this.lastFetchCyclesBurned = message;
+        this.fetchCyclesAverage = message;
+      }
+    } else {
+      this.lastFetchCyclesBurned = 'N/A';
+      this.fetchCyclesAverage = null;
     }
   }
 
@@ -1217,6 +1258,8 @@ class App {
     if (!confirmed) return;
 
     this.lastFetchCyclesBurned = null;
+    this.fetchCyclesAverage = null;
+    this.fetchCyclesCount = 0;
     this.#setFetching(true);
 
     try {
@@ -1362,22 +1405,12 @@ class App {
       // NEW: set interactive type checklist items
       this.typeChecklistItems = TYPE_CHECKLISTS.get(this.proposalData?.proposalType) || [];
 
-      if (typeof this.backend.getLastFetchCyclesBurned === 'function') {
-        try {
-          const burned = await this.backend.getLastFetchCyclesBurned();
-          this.lastFetchCyclesBurned = burned;
-        } catch (cyclesErr) {
-          this.lastFetchCyclesBurned = cyclesErr?.message || 'Unavailable';
-        }
-      } else {
-        this.lastFetchCyclesBurned = 'N/A';
-      }
-
       this.#updateChecklist();
     } catch (err) {
       alert(err?.message || String(err));
     }
 
+    await this.#loadCycleStats();
     this.#setFetching(false);
   }
 
@@ -2639,6 +2672,15 @@ ${linuxVerify}</pre>
                     ICP <em>(+ 0.0001 ICP network fee)</em>
                   </div>
                   <div style="font-size:12px;">
+                    <b>Average cycles burned</b>
+                    ${this.fetchCyclesCount > 0
+                      ? html`<span>
+                          (last ${this.fetchCyclesCount} fetch${this.fetchCyclesCount === 1 ? '' : 'es'})
+                        </span>`
+                      : null}
+                    : ${this.#formatCyclesDisplay(this.fetchCyclesAverage)}
+                  </div>
+                  <div style="font-size:12px;">
                     <b>Last fetch cycles burned</b>:
                     ${this.#formatCyclesDisplay(this.lastFetchCyclesBurned)}
                   </div>
@@ -2931,9 +2973,15 @@ ${linuxVerify}</pre>
                 ${(() => {
                   const steps = (this.verificationSteps || '').trim();
                   if (!steps) return html`<p>No type-specific steps available for this proposal.</p>`;
+                  const normalizeStepText = (line) => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return '';
+                    const withoutPrefix = trimmed.replace(/^(?:\d+\s*[.)]|[-*•])\s*/, '');
+                    return withoutPrefix.trim() || trimmed;
+                  };
                   const items = steps
                     .split('\n')
-                    .map((s) => s.trim())
+                    .map((s) => normalizeStepText(s))
                     .filter(Boolean);
                   return html`<ol class="steps-list">
                     ${items.map((s) => html`<li>${s}</li>`)}
