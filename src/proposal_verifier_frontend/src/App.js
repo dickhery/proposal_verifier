@@ -25,6 +25,24 @@ import { Principal } from '@dfinity/principal'; // <-- NEW
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
+const REQUIRED_ANCHOR_REL_ATTRS = ['noopener', 'noreferrer'];
+
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') {
+    node.setAttribute('target', '_blank');
+    const relTokens = new Set(
+      (node.getAttribute('rel') || '')
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter(Boolean),
+    );
+    for (const attr of REQUIRED_ANCHOR_REL_ATTRS) {
+      relTokens.add(attr);
+    }
+    node.setAttribute('rel', Array.from(relTokens).join(' '));
+  }
+});
+
 const markedRenderer = new marked.Renderer();
 const originalLinkRenderer = markedRenderer.link;
 markedRenderer.link = function (href, title, text) {
