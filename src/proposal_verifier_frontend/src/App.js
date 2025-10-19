@@ -2438,7 +2438,7 @@ ${linuxVerify}</pre>
       targetDisplay = targetName;
     }
 
-    const lines = [
+    const sections = [
       `**Proposal Verification Report - ${idDisplay} (${title})**`,
       `**Proposal Type:** ${typeDisplay}`,
       `**Target Canister:** ${targetDisplay}`,
@@ -2452,23 +2452,20 @@ ${linuxVerify}</pre>
     if (argValue !== 'N/A') {
       if (/\n/.test(argValue)) {
         const heading = argType !== 'N/A' ? `**Argument Payload:** (${argType})` : '**Argument Payload:**';
-        lines.push(heading);
         const lowerType = argType.toLowerCase();
         const fence = lowerType.includes('json') ? '```json' : '```';
-        lines.push(fence);
-        lines.push(argValue.trimEnd());
-        lines.push('```');
+        sections.push([heading, fence, argValue.trimEnd(), '```'].join('\n'));
       } else {
         const prefix = argType !== 'N/A' ? `(${argType}) ` : '';
-        lines.push(`**Argument Payload:** ${prefix}${argValue}`);
+        sections.push(`**Argument Payload:** ${prefix}${argValue}`);
       }
     } else if (argType !== 'N/A') {
-      lines.push(`**Argument Payload:** (${argType})`);
+      sections.push(`**Argument Payload:** (${argType})`);
     } else {
-      lines.push('**Argument Payload:** N/A');
+      sections.push('**Argument Payload:** N/A');
     }
 
-    lines.push(
+    sections.push(
       `**Proposer:** ${proposer}`,
       `**Verification Date:** ${verificationDate}`,
       `**Verified by:** ${verifiedBy}`,
@@ -2478,15 +2475,18 @@ ${linuxVerify}</pre>
 
     const notesTrimmed = typeof notes === 'string' ? notes.trim() : '';
     if (notesTrimmed) {
-      lines.push('**Reviewer Notes:**');
       const noteLines = notesTrimmed.split(/\r?\n/);
-      noteLines.forEach((line) => {
-        const content = line.trim();
-        lines.push(content ? `> ${content}` : '>');
-      });
+      const noteBlock = [
+        '**Reviewer Notes:**',
+        ...noteLines.map((line) => {
+          const content = line.trim();
+          return content ? `> ${content}` : '>';
+        }),
+      ].join('\n');
+      sections.push(noteBlock);
     }
 
-    return lines.join('\n');
+    return sections.join('\n\n');
   }
 
   #updateReportOverride(key, value) {
