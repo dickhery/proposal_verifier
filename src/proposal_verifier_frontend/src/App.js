@@ -690,6 +690,7 @@ class App {
   hashMatch = false;
   hashError = '';
   docResults = [];
+  docExpectation = 'unknown';
   rebuildScript = '';
   isFetching = false;
   isVerifyingArgs = false;
@@ -1037,7 +1038,8 @@ class App {
       fetch: !!this.proposalData,
       commit: this.commitStatus.startsWith('✅'),
       argsHash: this.hashMatch,
-      docHash: this.docResults.every((r) => r.match),
+      docHash:
+        this.docResults.length > 0 && this.docResults.every((r) => r.match),
       expected: !!this.expectedHash,
       rebuild: false,
       manual: false,
@@ -1314,6 +1316,7 @@ class App {
     this.fetchCyclesAverage = null;
     this.fetchCyclesCount = 0;
     this.#setFetching(true);
+    this.docExpectation = 'unknown';
 
     try {
       const aug = await this.backend.getProposalAugmented(BigInt(id));
@@ -1353,6 +1356,7 @@ class App {
         proposal_wasm_hash: unwrap(base.proposal_wasm_hash),
         proposal_arg_hash: unwrap(base.proposal_arg_hash),
       };
+      this.docExpectation = base.docExpectation || 'unknown';
 
       if (!this.proposalData.url || !this.proposalData.url.trim()) {
         const inferredNnsUrl = buildNnsProposalUrl(this.proposalData.id);
@@ -1614,6 +1618,19 @@ class App {
       return `${formatted}${approx}`;
     } catch (err) {
       return typeof value === 'string' ? value : String(value);
+    }
+  }
+
+  #formatDocExpectationLabel() {
+    switch (this.docExpectation) {
+      case 'expected':
+        return 'Documents required for verification (hash match recommended).';
+      case 'optional':
+        return 'Documents may be provided but are not strictly required.';
+      case 'not_applicable':
+        return 'No supporting documents expected for this proposal (e.g., removal/deregistration).';
+      default:
+        return 'Document expectation unknown.';
     }
   }
 
@@ -2094,17 +2111,25 @@ ${linuxVerify}</pre>
   #renderTypeChecklist() {
     const items =
       this.typeChecklists.get(this.proposalData?.proposalType) || [
-        { label: 'Fetch', checked: this.checklist.fetch },
-        { label: 'Commit Check', checked: this.checklist.commit },
-        { label: 'Arg Hash', checked: this.checklist.argsHash },
-        { label: 'Doc / File Hash', checked: this.checklist.docHash },
-        { label: 'Expected Hash from Sources', checked: this.checklist.expected },
-        { label: 'Rebuild & Compare', checked: this.checklist.rebuild },
+        { label: 'Fetch', key: 'fetch', checked: this.checklist.fetch },
+        { label: 'Commit Check', key: 'commit', checked: this.checklist.commit },
+        { label: 'Arg Hash', key: 'argsHash', checked: this.checklist.argsHash },
+        { label: 'Doc / File Hash', key: 'docHash', checked: this.checklist.docHash },
+        { label: 'Expected Hash from Sources', key: 'expected', checked: this.checklist.expected },
+        { label: 'Rebuild & Compare', key: 'rebuild', checked: this.checklist.rebuild },
       ];
     return html`
       <ul>
         ${items.map(
-          (item) => html`<li>${item.label}: ${item.checked ? '✅' : '❌'}</li>`,
+          (item) => {
+            const display =
+              item.key === 'docHash' && this.docExpectation === 'not_applicable'
+                ? 'N/A'
+                : item.checked
+                ? '✅'
+                : '❌';
+            return html`<li>${item.label}: ${display}</li>`;
+          },
         )}
       </ul>
       <div style="margin-top:8px;">
@@ -2126,38 +2151,38 @@ ${linuxVerify}</pre>
     switch (type) {
       case 'ProtocolCanisterManagement':
         items = [
-          { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'Commit Check', checked: this.checklist.commit },
-          { label: 'Expected WASM Hash Present', checked: this.checklist.expected },
-          { label: 'Arg Hash Verified', checked: this.checklist.argsHash },
-          { label: 'WASM Rebuilt & Hash Matched', checked: this.checklist.rebuild },
+          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
+          { label: 'Commit Check', key: 'commit', checked: this.checklist.commit },
+          { label: 'Expected WASM Hash Present', key: 'expected', checked: this.checklist.expected },
+          { label: 'Arg Hash Verified', key: 'argsHash', checked: this.checklist.argsHash },
+          { label: 'WASM Rebuilt & Hash Matched', key: 'rebuild', checked: this.checklist.rebuild },
         ];
         break;
       case 'IcOsVersionDeployment':
         items = [
-          { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'Expected Release Hash Present', checked: this.checklist.expected },
-          { label: 'Commit Check (if provided)', checked: this.checklist.commit },
-          { label: 'Release Package Hash Verified', checked: this.checklist.docHash },
+          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
+          { label: 'Expected Release Hash Present', key: 'expected', checked: this.checklist.expected },
+          { label: 'Commit Check (if provided)', key: 'commit', checked: this.checklist.commit },
+          { label: 'Release Package Hash Verified', key: 'docHash', checked: this.checklist.docHash },
         ];
         break;
       case 'ParticipantManagement':
         items = [
-          { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'All PDFs Hash-Matched', checked: this.checklist.docHash },
-          { label: 'Forum/Wiki Context Checked', checked: this.checklist.manual },
+          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
+          { label: 'All PDFs Hash-Matched', key: 'docHash', checked: this.checklist.docHash },
+          { label: 'Forum/Wiki Context Checked', key: 'manual', checked: this.checklist.manual },
         ];
         break;
       case 'Governance':
         items = [
-          { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'Manual Policy Review', checked: this.checklist.manual },
+          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
+          { label: 'Manual Policy Review', key: 'manual', checked: this.checklist.manual },
         ];
         break;
       default:
         items = [
-          { label: 'Fetch Proposal', checked: this.checklist.fetch },
-          { label: 'Manual Review', checked: this.checklist.manual },
+          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
+          { label: 'Manual Review', key: 'manual', checked: this.checklist.manual },
         ];
     }
     this.typeChecklists.set(type, items);
@@ -2585,6 +2610,8 @@ ${linuxVerify}</pre>
       commitUrl: p.commitUrl,
       extractedUrls: p.extractedUrls,
       extractedDocs: p.extractedDocs,
+      docExpectation: this.docExpectation,
+      docExpectationLabel: this.#formatDocExpectationLabel(),
       onchainWasmHash: p.proposal_wasm_hash,
       onchainArgHash: p.proposal_arg_hash,
       expectedHash: this.expectedHash,
@@ -2648,14 +2675,21 @@ ${linuxVerify}</pre>
     md += `## Extracted Info\n- **Repo**: ${data.extractedRepo || 'N/A'}\n- **Commit**: ${data.extractedCommit || 'N/A'} (${data.commitUrl || ''})\n- **Commit Status**: ${data.commitStatus || 'N/A'}\n\n`;
     md += `## Hashes\n- **Onchain WASM**: ${data.onchainWasmHash || 'N/A'}\n- **Onchain Arg**: ${data.onchainArgHash || 'N/A'}\n- **Expected**: ${data.expectedHash || 'N/A'} (source: ${data.expectedHashSource || 'N/A'})\n- **Arg Match**: ${data.argMatch ? '✅' : '❌'}\n\n`;
     md += `## Dashboard\n- **URL**: ${data.dashboardUrl}\n- **Snippet**: \n${data.payloadSnippet || 'N/A'}\n\n`;
-    md += `## Documents\n${(data.extractedDocs || [])
+    const docExpectationLabel = this.#formatDocExpectationLabel();
+    const docLines = (data.extractedDocs || [])
       .map((d) => `- ${d.name}: ${d.hash || 'N/A'}`)
-      .join('\n') || 'None'}\n\n`;
+      .join('\n');
+    md += `## Documents\n- Expectation: ${docExpectationLabel}\n${docLines || 'None'}\n\n`;
     const checklistEntries = Object.entries(data.checklist || {}).filter(
       ([key]) => key !== 'manual',
     );
     const checklistSection = checklistEntries
-      .map(([k, v]) => `- ${k}: ${v ? '✅' : '❌'}`)
+      .map(([k, v]) => {
+        if (k === 'docHash' && this.docExpectation === 'not_applicable') {
+          return `- ${k}: N/A`;
+        }
+        return `- ${k}: ${v ? '✅' : '❌'}`;
+      })
       .join('\n');
     md += `## Checklist\n${checklistSection || 'None'}\n\n`;
     md += `## Steps/Tools\n- **Steps**: ${data.verificationSteps || 'N/A'}\n- **Tools**: ${data.requiredTools || 'N/A'}\n\n`;
@@ -2944,6 +2978,7 @@ ${linuxVerify}</pre>
                       >`
                     : 'None'}
                 </p>
+                <p><b>Document Expectation:</b> ${this.#formatDocExpectationLabel()}</p>
                 <p><b>Artifact Path Hint:</b> ${p.extractedArtifact ?? 'None'}</p>
 
                 <p>
@@ -2984,7 +3019,12 @@ ${linuxVerify}</pre>
                 ${(() => {
                   const docs = (this.proposalData?.extractedDocs || []).filter((d) => d.hash != null);
                   if (!docs.length)
-                    return html`<p>No documents extracted. Paste URL or upload manually.</p>`;
+                    return this.docExpectation === 'not_applicable'
+                      ? html`<p>No documents expected for this proposal (removal/deregistration).</p>`
+                      : html`<p>
+                          No documents were auto-extracted. Provide hashes from the proposal summary or upload files manually for
+                          verification.
+                        </p>`;
                   return html`
                     <ul class="doc-list">
                       ${docs.map((d, idx) => {
@@ -3075,6 +3115,10 @@ ${linuxVerify}</pre>
                               <input
                                 type="checkbox"
                                 ?checked=${this.checklist[item.key] || false}
+                                ?disabled=${
+                                  item.key === 'docHash' &&
+                                  this.docExpectation === 'not_applicable'
+                                }
                                 @change=${(e) => this.#setChecklistOverride(item.key, e.target.checked)}
                               />
                               ${item.label}
