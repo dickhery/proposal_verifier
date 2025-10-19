@@ -25,6 +25,17 @@ import { Principal } from '@dfinity/principal'; // <-- NEW
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
+const markedRenderer = new marked.Renderer();
+const originalLinkRenderer = markedRenderer.link;
+markedRenderer.link = function (href, title, text) {
+  const html = originalLinkRenderer.call(this, href, title, text);
+  if (!html || html.includes('target=')) {
+    return html;
+  }
+  return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ');
+};
+marked.use({ renderer: markedRenderer });
+
 // -----------------------------
 // Constants / helpers
 // -----------------------------
@@ -448,9 +459,30 @@ const REPORT_HEADER_INPUTS = [
     placeholder: 'Your principal identifier',
     alwaysShow: true,
   },
-  { key: 'linkNns', label: 'NNS dapp view URL', placeholder: 'https://...' },
+  {
+    key: 'linkNns',
+    label: 'NNS dapp view URL',
+    placeholder: 'https://nns.ic0.app/proposal/?u=qoctq-giaaa-aaaaa-aaaea-cai&proposal=<id>',
+  },
   { key: 'linkDashboard', label: 'ICP Dashboard URL', placeholder: 'https://...' },
 ];
+
+const NNS_DAPP_PROPOSAL_BASE_URL =
+  'https://nns.ic0.app/proposal/?u=qoctq-giaaa-aaaaa-aaaea-cai&proposal=';
+
+function buildNnsProposalUrl(proposalId) {
+  if (proposalId === null || proposalId === undefined) return '';
+  let idString;
+  if (typeof proposalId === 'number' && Number.isFinite(proposalId)) {
+    idString = Math.trunc(proposalId).toString();
+  } else if (typeof proposalId === 'bigint') {
+    idString = proposalId.toString();
+  } else {
+    idString = String(proposalId).trim();
+  }
+  if (!/^\d+$/.test(idString)) return '';
+  return `${NNS_DAPP_PROPOSAL_BASE_URL}${idString}`;
+}
 
 // Find a 64-hex near helpful markers
 function extractHexFromTextAroundMarkers(
@@ -1304,6 +1336,13 @@ class App {
         proposal_arg_hash: unwrap(base.proposal_arg_hash),
       };
 
+      if (!this.proposalData.url || !this.proposalData.url.trim()) {
+        const inferredNnsUrl = buildNnsProposalUrl(this.proposalData.id);
+        if (inferredNnsUrl) {
+          this.proposalData.url = inferredNnsUrl;
+        }
+      }
+
       this.reportGenerationDate = new Date().toISOString().slice(0, 10);
       this.reportHeaderAutofill = {};
       // NEW: capture full raw ProposalInfo for export (.txt)
@@ -1571,7 +1610,8 @@ class App {
       if (u && !set.has(u)) set.add(u);
     };
 
-    push(p.url);
+    const nnsUrl = (typeof p.url === 'string' ? p.url.trim() : '') || buildNnsProposalUrl(p.id);
+    push(nnsUrl);
     push(this.dashboardUrl);
     push(p.extractedDocUrl);
     push(p.commitUrl);
@@ -1583,7 +1623,8 @@ class App {
     return html`
       <ul class="links">
         ${links.map(
-          (u) => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`,
+          (u) =>
+            html`<li><a href="${u}" target="_blank" rel="noreferrer noopener">${u}</a></li>`,
         )}
       </ul>
     `;
@@ -1606,7 +1647,8 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
         <h2>Release Package URLs & Quick Verify</h2>
         <ul class="links">
           ${this.releasePackageUrls.map(
-            (u) => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`,
+            (u) =>
+              html`<li><a href="${u}" target="_blank" rel="noreferrer noopener">${u}</a></li>`,
           )}
         </ul>
         <p><b>Shell commands (download & hash locally):</b></p>
@@ -1925,7 +1967,7 @@ ${linuxVerify}</pre>
               class="btn secondary"
               href="https://github.com/dfinity/candid/tree/master/tools/didc"
               target="_blank"
-              rel="noreferrer"
+              rel="noreferrer noopener"
             >Install didc</a
             >
           </div>
@@ -2249,6 +2291,9 @@ ${linuxVerify}</pre>
     const p = this.proposalData;
     if (!p) return null;
 
+    const existingNnsUrl = typeof p.url === 'string' ? p.url.trim() : '';
+    const derivedNnsUrl = buildNnsProposalUrl(p.id);
+
     const defaults = {
       proposalId: p.id != null ? String(p.id) : '',
       proposalTitle: p.title || '',
@@ -2268,7 +2313,7 @@ ${linuxVerify}</pre>
       verificationDate: '',
       verifiedBy: '',
       generatedBy: this.userPrincipal || '',
-      linkNns: p.url || '',
+      linkNns: existingNnsUrl || derivedNnsUrl || '',
       linkDashboard: this.dashboardUrl || '',
     };
 
@@ -2515,7 +2560,8 @@ ${linuxVerify}</pre>
       type: p.proposalType,
       title: p.title,
       summary: p.summary,
-      url: p.url,
+      url:
+        (typeof p.url === 'string' && p.url.trim()) || buildNnsProposalUrl(p.id) || '',
       extractedRepo: p.extractedRepo,
       extractedCommit: p.extractedCommit,
       commitUrl: p.commitUrl,
@@ -2852,7 +2898,7 @@ ${linuxVerify}</pre>
                   <b>Extracted Commit:</b>
                   ${p.extractedCommit
                     ? p.commitUrl
-                      ? html`<a href="${p.commitUrl}" target="_blank" rel="noreferrer"
+                    ? html`<a href="${p.commitUrl}" target="_blank" rel="noreferrer noopener"
                           >${p.extractedCommit}</a
                         >`
                       : p.extractedCommit
@@ -2875,7 +2921,7 @@ ${linuxVerify}</pre>
                 <p>
                   <b>Extracted Doc URL:</b>
                   ${p.extractedDocUrl
-                    ? html`<a href="${p.extractedDocUrl}" target="_blank" rel="noreferrer"
+                    ? html`<a href="${p.extractedDocUrl}" target="_blank" rel="noreferrer noopener"
                         >${p.extractedDocUrl}</a
                       >`
                     : 'None'}
@@ -2886,14 +2932,14 @@ ${linuxVerify}</pre>
                   <b>Commit Status:</b>
                   ${this.commitStatus}
                   ${p.commitUrl
-                    ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer">open</a>)`
+                    ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer noopener">open</a>)`
                     : ''}
                 </p>
 
                 ${this.dashboardUrl
                   ? html`<p>
                       <b>Dashboard:</b>
-                      <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer"
+                      <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer noopener"
                         >${this.dashboardUrl}</a
                       >
                     </p>`
