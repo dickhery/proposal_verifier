@@ -1037,6 +1037,8 @@ persistent actor verifier {
 
       return s;
     };
+
+    return s;
   };
 
   func extractAllUrls(t : Text) : [Text] {
