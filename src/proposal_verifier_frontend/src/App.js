@@ -1,5 +1,6 @@
 // src/proposal_verifier_frontend/src/App.js
 import { html, render } from 'lit-html';
+import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
 import {
   proposal_verifier_backend as anon_backend,
   canisterId as backendCanisterId,
@@ -21,6 +22,37 @@ import { IDL } from '@dfinity/candid';
 import { AuthClient } from '@dfinity/auth-client';
 import { HttpAgent } from '@dfinity/agent';
 import { Principal } from '@dfinity/principal'; // <-- NEW
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+
+const REQUIRED_ANCHOR_REL_ATTRS = ['noopener', 'noreferrer'];
+
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') {
+    node.setAttribute('target', '_blank');
+    const relTokens = new Set(
+      (node.getAttribute('rel') || '')
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter(Boolean),
+    );
+    for (const attr of REQUIRED_ANCHOR_REL_ATTRS) {
+      relTokens.add(attr);
+    }
+    node.setAttribute('rel', Array.from(relTokens).join(' '));
+  }
+});
+
+const markedRenderer = new marked.Renderer();
+const originalLinkRenderer = markedRenderer.link;
+markedRenderer.link = function (href, title, text) {
+  const html = originalLinkRenderer.call(this, href, title, text);
+  if (!html || html.includes('target=')) {
+    return html;
+  }
+  return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ');
+};
+marked.use({ renderer: markedRenderer });
 
 // -----------------------------
 // Constants / helpers
@@ -445,9 +477,30 @@ const REPORT_HEADER_INPUTS = [
     placeholder: 'Your principal identifier',
     alwaysShow: true,
   },
-  { key: 'linkNns', label: 'NNS dapp view URL', placeholder: 'https://...' },
+  {
+    key: 'linkNns',
+    label: 'NNS dapp view URL',
+    placeholder: 'https://nns.ic0.app/proposal/?u=qoctq-giaaa-aaaaa-aaaea-cai&proposal=<id>',
+  },
   { key: 'linkDashboard', label: 'ICP Dashboard URL', placeholder: 'https://...' },
 ];
+
+const NNS_DAPP_PROPOSAL_BASE_URL =
+  'https://nns.ic0.app/proposal/?u=qoctq-giaaa-aaaaa-aaaea-cai&proposal=';
+
+function buildNnsProposalUrl(proposalId) {
+  if (proposalId === null || proposalId === undefined) return '';
+  let idString;
+  if (typeof proposalId === 'number' && Number.isFinite(proposalId)) {
+    idString = Math.trunc(proposalId).toString();
+  } else if (typeof proposalId === 'bigint') {
+    idString = proposalId.toString();
+  } else {
+    idString = String(proposalId).trim();
+  }
+  if (!/^\d+$/.test(idString)) return '';
+  return `${NNS_DAPP_PROPOSAL_BASE_URL}${idString}`;
+}
 
 // Find a 64-hex near helpful markers
 function extractHexFromTextAroundMarkers(
@@ -1301,6 +1354,13 @@ class App {
         proposal_arg_hash: unwrap(base.proposal_arg_hash),
       };
 
+      if (!this.proposalData.url || !this.proposalData.url.trim()) {
+        const inferredNnsUrl = buildNnsProposalUrl(this.proposalData.id);
+        if (inferredNnsUrl) {
+          this.proposalData.url = inferredNnsUrl;
+        }
+      }
+
       this.reportGenerationDate = new Date().toISOString().slice(0, 10);
       this.reportHeaderAutofill = {};
       // NEW: capture full raw ProposalInfo for export (.txt)
@@ -1568,7 +1628,8 @@ class App {
       if (u && !set.has(u)) set.add(u);
     };
 
-    push(p.url);
+    const nnsUrl = (typeof p.url === 'string' ? p.url.trim() : '') || buildNnsProposalUrl(p.id);
+    push(nnsUrl);
     push(this.dashboardUrl);
     push(p.extractedDocUrl);
     push(p.commitUrl);
@@ -1580,7 +1641,8 @@ class App {
     return html`
       <ul class="links">
         ${links.map(
-          (u) => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`,
+          (u) =>
+            html`<li><a href="${u}" target="_blank" rel="noreferrer noopener">${u}</a></li>`,
         )}
       </ul>
     `;
@@ -1603,7 +1665,8 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
         <h2>Release Package URLs & Quick Verify</h2>
         <ul class="links">
           ${this.releasePackageUrls.map(
-            (u) => html`<li><a href="${u}" target="_blank" rel="noreferrer">${u}</a></li>`,
+            (u) =>
+              html`<li><a href="${u}" target="_blank" rel="noreferrer noopener">${u}</a></li>`,
           )}
         </ul>
         <p><b>Shell commands (download & hash locally):</b></p>
@@ -1922,7 +1985,7 @@ ${linuxVerify}</pre>
               class="btn secondary"
               href="https://github.com/dfinity/candid/tree/master/tools/didc"
               target="_blank"
-              rel="noreferrer"
+              rel="noreferrer noopener"
             >Install didc</a
             >
           </div>
@@ -2246,6 +2309,9 @@ ${linuxVerify}</pre>
     const p = this.proposalData;
     if (!p) return null;
 
+    const existingNnsUrl = typeof p.url === 'string' ? p.url.trim() : '';
+    const derivedNnsUrl = buildNnsProposalUrl(p.id);
+
     const defaults = {
       proposalId: p.id != null ? String(p.id) : '',
       proposalTitle: p.title || '',
@@ -2265,7 +2331,7 @@ ${linuxVerify}</pre>
       verificationDate: '',
       verifiedBy: '',
       generatedBy: this.userPrincipal || '',
-      linkNns: p.url || '',
+      linkNns: existingNnsUrl || derivedNnsUrl || '',
       linkDashboard: this.dashboardUrl || '',
     };
 
@@ -2435,7 +2501,7 @@ ${linuxVerify}</pre>
       targetDisplay = targetName;
     }
 
-    const lines = [
+    const sections = [
       `**Proposal Verification Report - ${idDisplay} (${title})**`,
       `**Proposal Type:** ${typeDisplay}`,
       `**Target Canister:** ${targetDisplay}`,
@@ -2449,23 +2515,20 @@ ${linuxVerify}</pre>
     if (argValue !== 'N/A') {
       if (/\n/.test(argValue)) {
         const heading = argType !== 'N/A' ? `**Argument Payload:** (${argType})` : '**Argument Payload:**';
-        lines.push(heading);
         const lowerType = argType.toLowerCase();
         const fence = lowerType.includes('json') ? '```json' : '```';
-        lines.push(fence);
-        lines.push(argValue.trimEnd());
-        lines.push('```');
+        sections.push([heading, fence, argValue.trimEnd(), '```'].join('\n'));
       } else {
         const prefix = argType !== 'N/A' ? `(${argType}) ` : '';
-        lines.push(`**Argument Payload:** ${prefix}${argValue}`);
+        sections.push(`**Argument Payload:** ${prefix}${argValue}`);
       }
     } else if (argType !== 'N/A') {
-      lines.push(`**Argument Payload:** (${argType})`);
+      sections.push(`**Argument Payload:** (${argType})`);
     } else {
-      lines.push('**Argument Payload:** N/A');
+      sections.push('**Argument Payload:** N/A');
     }
 
-    lines.push(
+    sections.push(
       `**Proposer:** ${proposer}`,
       `**Verification Date:** ${verificationDate}`,
       `**Verified by:** ${verifiedBy}`,
@@ -2475,15 +2538,18 @@ ${linuxVerify}</pre>
 
     const notesTrimmed = typeof notes === 'string' ? notes.trim() : '';
     if (notesTrimmed) {
-      lines.push('**Reviewer Notes:**');
       const noteLines = notesTrimmed.split(/\r?\n/);
-      noteLines.forEach((line) => {
-        const content = line.trim();
-        lines.push(content ? `> ${content}` : '>');
-      });
+      const noteBlock = [
+        '**Reviewer Notes:**',
+        ...noteLines.map((line) => {
+          const content = line.trim();
+          return content ? `> ${content}` : '>';
+        }),
+      ].join('\n');
+      sections.push(noteBlock);
     }
 
-    return lines.join('\n');
+    return sections.join('\n\n');
   }
 
   #updateReportOverride(key, value) {
@@ -2512,7 +2578,8 @@ ${linuxVerify}</pre>
       type: p.proposalType,
       title: p.title,
       summary: p.summary,
-      url: p.url,
+      url:
+        (typeof p.url === 'string' && p.url.trim()) || buildNnsProposalUrl(p.id) || '',
       extractedRepo: p.extractedRepo,
       extractedCommit: p.extractedCommit,
       commitUrl: p.commitUrl,
@@ -2642,8 +2709,11 @@ ${linuxVerify}</pre>
     const loading = this.isFetching;
     const headerDefaults = p ? this.#computeReportHeaderDefaults() || {} : null;
     const headerFinal = headerDefaults ? this.#applyReportOverrides(headerDefaults) : null;
-    const headerPreview = headerDefaults
+    const headerPreviewMarkdown = headerDefaults
       ? this.#formatReportHeaderMarkdown(headerFinal, headerDefaults, this.reportNotes)
+      : '';
+    const headerPreviewHtml = headerPreviewMarkdown
+      ? DOMPurify.sanitize(marked.parse(headerPreviewMarkdown))
       : '';
     const manualReportInputs = headerDefaults
       ? REPORT_HEADER_INPUTS.filter((field) => {
@@ -2846,7 +2916,7 @@ ${linuxVerify}</pre>
                   <b>Extracted Commit:</b>
                   ${p.extractedCommit
                     ? p.commitUrl
-                      ? html`<a href="${p.commitUrl}" target="_blank" rel="noreferrer"
+                    ? html`<a href="${p.commitUrl}" target="_blank" rel="noreferrer noopener"
                           >${p.extractedCommit}</a
                         >`
                       : p.extractedCommit
@@ -2869,7 +2939,7 @@ ${linuxVerify}</pre>
                 <p>
                   <b>Extracted Doc URL:</b>
                   ${p.extractedDocUrl
-                    ? html`<a href="${p.extractedDocUrl}" target="_blank" rel="noreferrer"
+                    ? html`<a href="${p.extractedDocUrl}" target="_blank" rel="noreferrer noopener"
                         >${p.extractedDocUrl}</a
                       >`
                     : 'None'}
@@ -2880,14 +2950,14 @@ ${linuxVerify}</pre>
                   <b>Commit Status:</b>
                   ${this.commitStatus}
                   ${p.commitUrl
-                    ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer">open</a>)`
+                    ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer noopener">open</a>)`
                     : ''}
                 </p>
 
                 ${this.dashboardUrl
                   ? html`<p>
                       <b>Dashboard:</b>
-                      <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer"
+                      <a href="${this.dashboardUrl}" target="_blank" rel="noreferrer noopener"
                         >${this.dashboardUrl}</a
                       >
                     </p>`
@@ -3027,7 +3097,9 @@ ${linuxVerify}</pre>
                 ${headerDefaults
                   ? html`
                       <h3>Summary Preview</h3>
-                      <pre class="report-preview">${headerPreview}</pre>
+                      <div class="report-preview markdown-preview">
+                        ${unsafeHTML(headerPreviewHtml)}
+                      </div>
                     `
                   : ''}
                 ${headerDefaults
