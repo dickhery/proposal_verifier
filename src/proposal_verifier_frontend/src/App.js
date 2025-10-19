@@ -1,5 +1,6 @@
 // src/proposal_verifier_frontend/src/App.js
 import { html, render } from 'lit-html';
+import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
 import {
   proposal_verifier_backend as anon_backend,
   canisterId as backendCanisterId,
@@ -21,6 +22,8 @@ import { IDL } from '@dfinity/candid';
 import { AuthClient } from '@dfinity/auth-client';
 import { HttpAgent } from '@dfinity/agent';
 import { Principal } from '@dfinity/principal'; // <-- NEW
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 
 // -----------------------------
 // Constants / helpers
@@ -2642,8 +2645,11 @@ ${linuxVerify}</pre>
     const loading = this.isFetching;
     const headerDefaults = p ? this.#computeReportHeaderDefaults() || {} : null;
     const headerFinal = headerDefaults ? this.#applyReportOverrides(headerDefaults) : null;
-    const headerPreview = headerDefaults
+    const headerPreviewMarkdown = headerDefaults
       ? this.#formatReportHeaderMarkdown(headerFinal, headerDefaults, this.reportNotes)
+      : '';
+    const headerPreviewHtml = headerPreviewMarkdown
+      ? DOMPurify.sanitize(marked.parse(headerPreviewMarkdown))
       : '';
     const manualReportInputs = headerDefaults
       ? REPORT_HEADER_INPUTS.filter((field) => {
@@ -3027,7 +3033,9 @@ ${linuxVerify}</pre>
                 ${headerDefaults
                   ? html`
                       <h3>Summary Preview</h3>
-                      <pre class="report-preview">${headerPreview}</pre>
+                      <div class="report-preview markdown-preview">
+                        ${unsafeHTML(headerPreviewHtml)}
+                      </div>
                     `
                   : ''}
                 ${headerDefaults

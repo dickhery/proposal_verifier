@@ -197,6 +197,66 @@ details.type-guidance summary { font-weight: bold; }
 
 .report-preview {
   margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid #dcdcdc;
+  border-radius: 8px;
+  background: #fafafa;
+  overflow-x: auto;
+}
+
+.report-preview h1,
+.report-preview h2,
+.report-preview h3 {
+  margin-top: 1.2em;
+  margin-bottom: 0.6em;
+  line-height: 1.2;
+}
+
+.report-preview h1:first-child,
+.report-preview h2:first-child,
+.report-preview h3:first-child {
+  margin-top: 0;
+}
+
+.report-preview p {
+  margin: 0 0 0.8em;
+}
+
+.report-preview ul,
+.report-preview ol {
+  margin: 0 0 0.8em 1.5em;
+  padding-left: 1em;
+}
+
+.report-preview li + li {
+  margin-top: 0.3em;
+}
+
+.report-preview code {
+  background: rgba(27, 31, 35, 0.05);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.report-preview pre {
+  background: rgba(27, 31, 35, 0.08);
+  padding: 12px;
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.report-preview table {
+  border-collapse: collapse;
+  margin: 0 0 1em;
+  width: 100%;
+}
+
+.report-preview th,
+.report-preview td {
+  border: 1px solid #d0d7de;
+  padding: 6px 10px;
+  text-align: left;
 }
 
 .report-notes {
