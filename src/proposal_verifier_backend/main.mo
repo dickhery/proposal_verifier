@@ -42,6 +42,13 @@ persistent actor verifier {
   type TransformArgs = { response : HttpResponsePayload; context : Blob };
   type FetchResult = { body : Blob; headers : [HttpHeader] };
 
+  type DocExpectation = {
+    #expected;
+    #optional;
+    #notExpected;
+    #unknown;
+  };
+
   // -----------------------------
   // NNS governance types (expanded subset)
   // -----------------------------
@@ -89,6 +96,7 @@ persistent actor verifier {
     extractedUrls : [Text];
     commitUrl : ?Text;
     extractedDocs : [{ name : Text; hash : ?Text }];
+    docExpectation : Text;
 
     // Expose on-chain hashes from Proposal.action.InstallCode (if present)
     proposal_arg_hash : ?Text;
@@ -894,6 +902,69 @@ persistent actor verifier {
     Array.subArray(Array.freeze(docs), 0, idx);
   };
 
+  func detectParticipantDocExpectation(lowerSummary : Text, docCount : Nat) : DocExpectation {
+    let removalKeywords : [Text] = [
+      "remove node provider",
+      "deregister node provider",
+      "de-register node provider",
+      "remove the node provider",
+      "remove node-provider",
+      "remove this node provider",
+    ];
+    for (needle in removalKeywords.vals()) {
+      if (Text.contains(lowerSummary, #text needle)) {
+        return #notExpected;
+      };
+    };
+
+    if (docCount > 0) {
+      return #expected;
+    };
+
+    let additionKeywords : [Text] = [
+      "add node provider",
+      "register node provider",
+      "node provider registration",
+      "node-provider registration",
+      "identity and compliance declaration",
+    ];
+    for (needle in additionKeywords.vals()) {
+      if (Text.contains(lowerSummary, #text needle)) {
+        return #expected;
+      };
+    };
+
+    #unknown;
+  };
+
+  func detectDocExpectation(
+    proposalType : Text,
+    lowerSummary : Text,
+    docCount : Nat,
+  ) : DocExpectation {
+    switch (proposalType) {
+      case ("ParticipantManagement") {
+        detectParticipantDocExpectation(lowerSummary, docCount);
+      };
+      case _ {
+        if (docCount > 0) {
+          #expected;
+        } else {
+          #unknown;
+        };
+      };
+    };
+  };
+
+  func docExpectationToText(expectation : DocExpectation) : Text {
+    switch (expectation) {
+      case (#expected) "expected";
+      case (#optional) "optional";
+      case (#notExpected) "not_applicable";
+      case (#unknown) "unknown";
+    };
+  };
+
   // Only call deterministic/text/json providers here
   func isStableDomain(url : Text) : Bool {
     Text.contains(url, #text "https://ic-api.internetcomputer.org/") or Text.contains(url, #text "https://api.github.com/") or Text.contains(url, #text "https://raw.githubusercontent.com/");
@@ -1182,6 +1253,7 @@ persistent actor verifier {
 
               // Extract bullet docs
               let extractedDocs = extractDocuments(summary);
+              let docExpectation = detectDocExpectation(proposalType, lowerSummary, extractedDocs.size());
 
               // For ParticipantManagement, default wiki if not present
               let finalDocUrl = switch (proposalType) {
@@ -1222,6 +1294,7 @@ persistent actor verifier {
                 extractedUrls = urls;
                 commitUrl = commitUrlOpt;
                 extractedDocs;
+                docExpectation = docExpectationToText(docExpectation);
                 proposal_arg_hash;
                 proposal_wasm_hash;
               };
