@@ -134,12 +134,13 @@ flowchart TD
   B --> C["Extract repo, commit, expected hashes"]
   C --> D["Clone repo & checkout commit"]
   D --> E["Rebuild binaries or download release"]
-  E --> F["sha256sum raw and/or gz WASM"]
+  E --> F["sha256sum raw or gz WASM"]
   F --> G{Matches expected?}
   G -->|yes| H["Encode args with didc; sha256"]
   H --> I{arg_hash matches?}
   I -->|yes| J["Publish verification report"]
-  G -->|no|  K["Troubleshoot – see §13"]
+  G -->|no| K["Troubleshoot - see section 13"]
+  I -->|no| K
 ```
 
 ### B. With the Proposal Verifier app
