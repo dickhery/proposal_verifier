@@ -748,6 +748,72 @@ persistent actor verifier {
     return null;
   };
 
+  func isWhitespace(c : Char) : Bool {
+    let n = Char.toNat32(c);
+    n == 32 or n == 10 or n == 13 or n == 9;
+  };
+
+  func findNextNonWs(t : Text, from : Nat) : Nat {
+    let arr = Text.toArray(t);
+    var i = from;
+    while (i < Array.size(arr) and isWhitespace(arr[i])) {
+      i += 1;
+    };
+    i;
+  };
+
+  let CHAR_DOUBLE_QUOTE : Char = Char.fromNat32(34);
+  let CHAR_BACKSLASH : Char = Char.fromNat32(92);
+
+  func consumeJsonStringLiteral(t : Text, start : Nat) : ?Text {
+    let arr = Text.toArray(t);
+    let n = Array.size(arr);
+    if (start >= n or arr[start] != CHAR_DOUBLE_QUOTE) return null;
+    var i = start + 1;
+    var escaped = false;
+    while (i < n) {
+      let ch = arr[i];
+      if (escaped) {
+        escaped := false;
+      } else {
+        if (ch == CHAR_BACKSLASH) {
+          escaped := true;
+        } else if (ch == CHAR_DOUBLE_QUOTE) {
+          return ?textSlice(t, start, i + 1);
+        };
+      };
+      i += 1;
+    };
+    null;
+  };
+
+  func extractKeyValueSnippet(jsonText : Text, quotedKey : Text) : ?Text {
+    switch (indexOf(jsonText, quotedKey)) {
+      case null { null };
+      case (?p) {
+        let afterKey = p + Text.size(quotedKey);
+        let arr = Text.toArray(jsonText);
+        var i = afterKey;
+        let n = Array.size(arr);
+        while (i < n and arr[i] != ':') {
+          i += 1;
+        };
+        if (i >= n) return null;
+        i += 1;
+        i := findNextNonWs(jsonText, i);
+        if (i >= n) return null;
+        if (arr[i] == CHAR_DOUBLE_QUOTE) {
+          return consumeJsonStringLiteral(jsonText, i);
+        } else if (arr[i] == '{') {
+          return findBalancedFromBrace(jsonText, i);
+        } else {
+          let end = Nat.min(Text.size(jsonText), i + 1200);
+          return ?textSlice(jsonText, i, end);
+        };
+      };
+    };
+  };
+
   func isHex(s : Text) : Bool {
     for (ch in s.chars()) {
       let c = Char.toNat32(ch);
@@ -1533,13 +1599,15 @@ persistent actor verifier {
   };
 
   func extractPayloadSnippetFromJson(jsonText : Text) : ?Text {
-    switch (indexOf(jsonText, "\"payload\"")) {
-      case null null;
-      case (?p) {
-        let end = Nat.min(Text.size(jsonText), p + 1500);
-        ?textSlice(jsonText, p, end);
-      };
+    switch (extractKeyValueSnippet(jsonText, "\"payload_text_rendering\"")) {
+      case (?s) { return ?s };
+      case null {};
     };
+    switch (extractKeyValueSnippet(jsonText, "\"payload\"")) {
+      case (?s2) { return ?s2 };
+      case null {};
+    };
+    null;
   };
 
   // -------- Extract likely Candid arg text from a payload snippet -------

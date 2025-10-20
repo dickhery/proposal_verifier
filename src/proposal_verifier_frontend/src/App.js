@@ -24,6 +24,7 @@ import { HttpAgent } from '@dfinity/agent';
 import { Principal } from '@dfinity/principal'; // <-- NEW
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { fetchProposalJson, extractPayloadRendering, fetchPayloadEndpoint } from './icApi.js';
 
 const REQUIRED_ANCHOR_REL_ATTRS = ['noopener', 'noreferrer'];
 
@@ -1111,11 +1112,8 @@ class App {
 
   async #prefillFromIcApi(id) {
     try {
-      const url = `https://ic-api.internetcomputer.org/api/v3/proposals/${id}`;
-      const res = await fetch(url, { credentials: 'omit', mode: 'cors' });
-      if (!res.ok) return;
-
-      const text = await res.text();
+      const { json, text } = await fetchProposalJson(id);
+      if (!text) return;
 
       const extractedFields = extractDashboardReportFields(text);
       if (extractedFields && Object.keys(extractedFields).length) {
@@ -1131,6 +1129,15 @@ class App {
       const argMaybe = extractHexFromTextAroundMarkers(text, ['arg_hash']);
       if (argMaybe) {
         this.argHash = argMaybe;
+      }
+
+      let rendered = extractPayloadRendering(json) || extractPayloadRendering(text);
+      if (!rendered) {
+        rendered = await fetchPayloadEndpoint(id);
+      }
+      if (rendered && !this.payloadSnippetFromDashboard) {
+        const normalized = this.#normalizeDashboardPayloadSnippet(rendered);
+        this.payloadSnippetFromDashboard = normalized || rendered;
       }
 
       const urls = new Set();
@@ -1233,12 +1240,20 @@ class App {
     if (!text) return '';
 
     const lower = text.toLowerCase();
-    const payloadIdx = lower.indexOf('"payload"');
-    if (payloadIdx >= 0) {
-      const fromPayload = text.slice(payloadIdx);
-      const colonIdx = fromPayload.indexOf(':');
+    const keyCandidates = ['"payload_text_rendering"', '"payload"', 'payload_text_rendering', 'payload'];
+    let keyIdx = -1;
+    for (const k of keyCandidates) {
+      const idx = lower.indexOf(k.toLowerCase());
+      if (idx >= 0) {
+        keyIdx = idx;
+        break;
+      }
+    }
+    if (keyIdx >= 0) {
+      const fromKey = text.slice(keyIdx);
+      const colonIdx = fromKey.indexOf(':');
       if (colonIdx >= 0) {
-        text = fromPayload.slice(colonIdx + 1).trim();
+        text = fromKey.slice(colonIdx + 1).trim();
       }
     }
 
