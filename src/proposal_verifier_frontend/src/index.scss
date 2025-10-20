@@ -195,6 +195,27 @@ details.type-guidance {
 }
 details.type-guidance summary { font-weight: bold; }
 
+.arg-help {
+  background: #f7f9ff;
+  border-left: 4px solid var(--accent);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.arg-help p {
+  margin: 0 0 8px;
+}
+
+.arg-help ul {
+  margin: 0 0 8px 1.25rem;
+  padding-left: 0;
+  list-style: disc;
+}
+
+.arg-help li {
+  margin-bottom: 4px;
+}
+
 .report-preview {
   margin: 0 0 16px;
   padding: 16px;
