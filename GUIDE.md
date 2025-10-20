@@ -125,7 +125,6 @@ dfx --version
 
 ## 6. Two workflows at a glance (diagrams)
 
-> ✅ **Fix for GitHub rendering**: Mermaid edges with labels use the `-->|label|` form. The diagrams below render on GitHub.
 
 ### A. Manual verification (no app)
 
@@ -141,7 +140,6 @@ flowchart TD
   H --> I{arg_hash matches?}
   I -->|yes| J["Publish verification report"]
   G -->|no|  K["Troubleshoot – see §13"]
-  I -->|no|  K
 ```
 
 ### B. With the Proposal Verifier app
