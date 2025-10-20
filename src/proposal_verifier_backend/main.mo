@@ -978,35 +978,67 @@ persistent actor verifier {
 
     func isTrimChar(c : Char) : Bool {
       let n = Char.toNat32(c);
-      // ) ] } . , ; : ' " `
-      n == 41 or n == 93 or n == 125 or n == 46 or n == 44 or n == 59 or n == 58 or n == 39 or n == 34 or n == 96;
+      // ) ] } . , ; : ' " ` >
+      n == 41 or n == 93 or n == 125 or n == 46 or n == 44 or n == 59 or n == 58 or n == 39 or n == 34 or n == 96 or n == 62;
     };
 
-    // Trim trailing punctuation commonly stuck to URLs
-    label trim_loop loop {
-      if (Text.size(s) == 0) break trim_loop;
-      let last = Text.toArray(s)[Text.size(s) - 1];
-      if (isTrimChar(last)) {
-        s := textSlice(s, 0, Text.size(s) - 1);
-      } else { break trim_loop };
+    func isLeadingWrapper(c : Char) : Bool {
+      let n = Char.toNat32(c);
+      // ( [ { < ' "
+      n == 40 or n == 91 or n == 123 or n == 60 or n == 39 or n == 34;
     };
 
-    // Remove extra closing ')' if more ')' than '('
-    func countChar(t : Text, c : Char) : Nat {
-      var k : Nat = 0;
-      for (ch in t.chars()) { if (ch == c) k += 1 };
-      k;
-    };
-    var opens = countChar(s, '(');
-    var closes = countChar(s, ')');
-    label fix_paren loop {
-      if (closes > opens and Text.size(s) > 0 and Text.toArray(s)[Text.size(s) - 1] == ')') {
-        s := textSlice(s, 0, Text.size(s) - 1);
-        closes -= 1;
-      } else break fix_paren;
+    label sanitize_loop loop {
+      if (Text.size(s) == 0) return s;
+
+      // Trim trailing punctuation commonly stuck to URLs
+      label trim_loop loop {
+        if (Text.size(s) == 0) break trim_loop;
+        let last = Text.toArray(s)[Text.size(s) - 1];
+        if (isTrimChar(last)) {
+          s := textSlice(s, 0, Text.size(s) - 1);
+        } else { break trim_loop };
+      };
+
+      // Remove extra closing ')' if more ')' than '('
+      func countChar(t : Text, c : Char) : Nat {
+        var k : Nat = 0;
+        for (ch in t.chars()) { if (ch == c) k += 1 };
+        k;
+      };
+      var opens = countChar(s, '(');
+      var closes = countChar(s, ')');
+      label fix_paren loop {
+        if (closes > opens and Text.size(s) > 0 and Text.toArray(s)[Text.size(s) - 1] == ')') {
+          s := textSlice(s, 0, Text.size(s) - 1);
+          closes -= 1;
+        } else break fix_paren;
+      };
+
+      // Handle Markdown-style inline links where the visible text and URL are glued
+      switch (indexOf(s, "](http")) {
+        case (?idx) {
+          let candidate = textSlice(s, idx + 2, Text.size(s));
+          if (Text.size(candidate) == 0) return candidate;
+          s := candidate;
+          continue sanitize_loop;
+        };
+        case null {};
+      };
+
+      // Strip leftover leading wrappers like '[' or '(' that may precede the URL
+      label lead_loop loop {
+        if (Text.size(s) == 0) break lead_loop;
+        let first = Text.toArray(s)[0];
+        if (isLeadingWrapper(first)) {
+          s := textSlice(s, 1, Text.size(s));
+        } else { break lead_loop };
+      };
+
+      return s;
     };
 
-    s;
+    return s;
   };
 
   func extractAllUrls(t : Text) : [Text] {
