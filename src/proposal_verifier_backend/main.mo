@@ -1662,7 +1662,7 @@ persistent actor verifier {
     while (i < n) {
       let code = Char.toNat32(chars[i]);
       if (code == 44 or code == 125 or code == 93 or code == 10 or code == 13) {
-        break;
+        return trimWhitespace(textSlice(t, start, i));
       };
       i += 1;
     };
