@@ -1,382 +1,438 @@
-# IC Proposal Verification Guide
+# **Internet Computer Proposal Verification — Complete Guide (with & without the Proposal Verifier app)**
+
+> A practical, beginner-friendly handbook to verify NNS proposals step-by-step, rebuild binaries, check argument hashes, and publish your results. It also shows how to use the **Proposal Verifier** app and how to verify **manually in parallel**.
+
+---
 
 ## Table of Contents
 
-- [Introduction: What Are NNS Proposals and Why Verify Them?](#introduction-what-are-nns-proposals-and-why-verify-them)
-- [Key Concepts: Hashes, Git Commits, Arguments, and Binaries](#key-concepts-hashes-git-commits-arguments-and-binaries)
-- [Proposal Types and What Needs to Be Verified](#proposal-types-and-what-needs-to-be-verified)
-- [Setup and Dependencies](#setup-and-dependencies)
-  - [Windows (Using WSL)](#windows-using-wsl)
-  - [macOS](#macos)
-  - [Linux (Ubuntu Recommended)](#linux-ubuntu-recommended)
-  - [Common Tools Across Platforms](#common-tools-across-platforms)
-- [Using the Proposal Verifier App](#using-the-proposal-verifier-app)
-  - [App Overview and Deployment](#app-overview-and-deployment)
-  - [Costs and Cycles](#costs-and-cycles)
-  - [Deploying Your Own Version](#deploying-your-own-version)
-- [Step-by-Step Verification with the Proposal Verifier App](#step-by-step-verification-with-the-proposal-verifier-app)
-  - [Fetch Proposal](#fetch-proposal)
-  - [Review Extracted Data](#review-extracted-data)
-  - [Verify Arg Hash](#verify-arg-hash)
-  - [Verify Documents/Files](#verify-documentsfiles)
-  - [Rebuild Locally](#rebuild-locally)
-  - [Complete Checklist](#complete-checklist)
-  - [Export and Share Results](#export-and-share-results)
-- [Step-by-Step Verification Manually (Without the App)](#step-by-step-verification-manually-without-the-app)
-  - [Fetch Proposal](#fetch-proposal-1)
-  - [Extract Data](#extract-data)
-  - [Verify Commit](#verify-commit)
-  - [Verify Arg Hash](#verify-arg-hash-1)
-  - [Verify Documents/Files](#verify-documentsfiles-1)
-  - [Rebuild Binaries](#rebuild-binaries)
-  - [Complete Checklist](#complete-checklist-1)
-  - [Share Results](#share-results)
-- [Verifying Proposals That Require Mostly Manual Review](#verifying-proposals-that-require-mostly-manual-review)
-  - [Motion Proposals](#motion-proposals)
-  - [Add/Remove Controllers](#addremove-controllers)
-  - [Other Manual-Heavy Types](#other-manual-heavy-types)
-- [Troubleshooting Common Problems](#troubleshooting-common-problems)
-  - [Hash Mismatches](#hash-mismatches)
-  - [Build Failures](#build-failures)
-  - [CORS Blocks or Fetch Issues](#cors-blocks-or-fetch-issues)
-  - [didc Errors](#didc-errors)
-  - [Proposal Not Found](#proposal-not-found)
-  - [Balances/Fees Issues](#balancesfees-issues)
-  - [App-Specific Issues](#app-specific-issues)
-  - [Verifying Null Arg Hashes](#verifying-null-arg-hashes)
-- [Sharing Results](#sharing-results-1)
-- [Additional Resources](#additional-resources)
+* [1. What is a proposal & why verification matters](#1-what-is-a-proposal--why-verification-matters)
+* [2. Where proposals live (NNS, Dashboard & API)](#2-where-proposals-live-nns-dashboard--api)
+* [3. Proposal types & what to verify for each](#3-proposal-types--what-to-verify-for-each)
+* [4. Core concepts in plain English](#4-core-concepts-in-plain-english)
+* [5. Setup & dependencies (Windows/macOS/Linux)](#5-setup--dependencies-windowsmacoslinux)
+* [6. Two workflows at a glance (diagrams)](#6-two-workflows-at-a-glance-diagrams)
+* [7. Full step-by-step (manual method)](#7-full-step-by-step-manual-method)
+* [8. Full step-by-step (Proposal Verifier app)](#8-full-step-by-step-proposal-verifier-app)
+* [9. Rebuilding & hashing binaries (IC canisters & IC-OS)](#9-rebuilding--hashing-binaries-ic-canisters--ic-os)
+* [10. Arguments & arg_hash verification (including “null”/empty cases)](#10-arguments--arg_hash-verification-including-nullempty-cases)
+* [11. Manual-heavy proposals (controllers, motions, participants)](#11-manual-heavy-proposals-controllers-motions-participants)
+* [12. Publishing a verification report](#12-publishing-a-verification-report)
+* [13. Troubleshooting & common pitfalls](#13-troubleshooting--common-pitfalls)
+* [14. Using the Proposal Verifier app locally (clone, configure, deploy)](#14-using-the-proposal-verifier-app-locally-clone-configure-deploy)
+* [15. Quick checklists](#15-quick-checklists)
 
-## Introduction: What Are NNS Proposals and Why Verify Them?
+---
 
-The Network Nervous System (NNS) is the decentralized governance system of the Internet Computer Protocol (ICP) blockchain. It allows neuron holders (participants who stake ICP tokens) to vote on proposals that shape the network's evolution. Proposals are on-chain requests for actions such as upgrading canisters (smart contracts), electing new IC-OS versions (the software running on ICP nodes), adding node providers, or adjusting network economics. Each proposal includes metadata (title, summary, URLs), a payload (arguments like configuration parameters, WASM code hashes, or document hashes), and often references to Git commits or external resources.
+## 1. What is a proposal & why verification matters
 
-**Why verify proposals?** Verification ensures the proposal’s payload matches what the proposer claims, preventing tampering, errors, or malicious changes. In a decentralized system like ICP, trust is distributed—relying on "many eyes" reduces risks like unverified binaries introducing bugs or backdoors, governance capture, or operational failures. Independent verification builds resilience; if multiple verifiers rebuild artifacts and match hashes, it forms a tamper-resistant attestation. Decentralization depends on community participation to maintain transparency and security.
+On the Internet Computer (IC), upgrades and governance changes are enacted via **Network Nervous System (NNS) proposals**. These can upgrade core protocol canisters, deploy new features, change controllers, and even roll out new IC-OS versions. Because proposals can be powerful, **anyone** should be able to independently verify what’s being voted on: confirm the source commit, rebuild the binaries, check hashes and arguments, and ensure the payload does exactly what it claims. Clear, reproducible verification is what turns governance from “trust us” into “trust, but verify.”
 
-**Key risks if unverified:** Tampered documents (e.g., fake node provider PDFs), mismatched commits (wrong code version), or altered payloads could lead to regressions or security holes. For example, an unverified WASM upgrade might introduce vulnerabilities to critical canisters like the NNS governance or ICP ledger.
+---
 
-**Rewards for participation:** Voting on proposals earns rewards, with governance topics weighted 20x higher than others (e.g., protocol upgrades).
+## 2. Where proposals live (NNS, Dashboard & API)
 
-The verification workflow typically follows this diagram (ASCII art for simplicity):
+* **NNS dapp** shows each proposal, payload, and status.
+* **ICP Dashboard** provides detailed proposal pages and a “Wasm Verification” section for install/upgrade proposals.
+* **IC Public API** exposes proposals in JSON:
+  `https://ic-api.internetcomputer.org/api/v3/proposals/<PROPOSAL_ID>` (handy for scripting/automation and extracting payload fields/hashes).
 
+---
+
+## 3. Proposal types & what to verify for each
+
+Here’s a high-level mapping (not exhaustive). The “what to verify” column is what *you* should independently confirm.
+
+| Category (examples)                                                                   | What to verify (minimum)                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Protocol Canister Management** (e.g., governance, registry, NNS frontend canisters) | Source **repo & commit**, **rebuild** the WASM (or use release artifact), compute **SHA-256** (raw and/or gzipped), compare to expected/“proposed wasm sha-256”; verify **arg_hash** if provided. |
+| **Application Canister Management** (ledger, II, ckBTC, etc.)                         | As above: repo/commit → rebuild → SHA-256 → compare; confirm **payload args** and **install mode** (upgrade vs reinstall).                                                                        |
+| **IC-OS Version Deployment/Election**                                                 | Confirm **release package** link & **release SHA-256**, or reproduce via the official script; compare calculated hash to the proposal’s expected hash.                                            |
+| **Subnet/Node/Participant/Network Economics**                                         | No WASM to rebuild; verify **principals/IDs**, **document hashes** (e.g., PDFs), **config/allowances**, and **tables/parameters** against the stated intent.                                      |
+| **Governance (Motion) Proposals**                                                     | **Text-only** intent. Read the summary/discussion and verify the stated scope and implications. These carry no bytecode to hash.                                                                  |
+
+See “Proposals (Overview)” and “Proposal Topics & Types” for canonical categories and examples.
+
+---
+
+## 4. Core concepts in plain English
+
+* **Git commit** – a fingerprint (hash) that points to *exact* source code. The proposal should state a commit or link you can check.
+* **WASM module** – compiled bytecode you deploy to a canister. We hash the bytes (and sometimes the gzipped bytes) to verify integrity.
+* **Hash (SHA-256)** – a one-way fingerprint of bytes. If two parties compute SHA-256 on the *same* file/bytes, they must match.
+* **Arguments / `arg_hash`** – for install/upgrade proposals, the payload can include arguments. The NNS governance proposal often stores **`arg_hash`**, which is **SHA-256 of the Candid-encoded argument bytes**. You should encode the same arguments and compare.
+* **Reproducible build** – re-building the WASM from the given commit in a clean environment and reproducing the same hash.
+
+The official “Verify Proposals” doc demonstrates these ideas with concrete commands and a “Wasm Verification” section.
+
+---
+
+## 5. Setup & dependencies (Windows/macOS/Linux)
+
+You don’t need deep dev experience—just a clean environment and the right tools.
+
+### Common tools (all OS)
+
+* **Git** (clone the repo and checkout the commit)
+* **Docker** (official IC build scripts use Docker to make builds reproducible)
+* **curl** (download release artifacts or helper scripts)
+* **sha256sum / shasum** (compute hashes)
+* **`dfx`** (IC SDK; optional but useful)
+* **`didc`** (Candid codec; encode args to compare against `arg_hash`)
+
+#### Install `dfx` (recommended)
+
+Use the official `dfxvm` installer to manage `dfx` versions:
+
+```bash
+sh -ci "$(curl -fsSL https://internetcomputer.org/install.sh)"
 ```
-+-------------------+     +-------------------+     +-------------------+
-| 1. Fetch Proposal | --> | 2. Extract Data   | --> | 3. Rebuild/Hash   |
-|   (ID from NNS)   |     | (Commits, Hashes, |     |   & Compare       |
-|                   |     |  URLs, Payload)   |     |   to On-Chain     |
-+-------------------+     +-------------------+     +-------------------+
-                             |                           |
-                             v                           v
-                   +-------------------+     +-------------------+
-                   | 4. Check Docs/    | <-- | 5. Share Results  |
-                   |    Args Integrity |     |   (Forum/Gist)    |
-                   +-------------------+     +-------------------+
+
+Then initialize or switch versions: `dfxvm install <version>` / `dfx --version`.
+
+> Tip: `dfx` isn’t strictly required for basic verification, but it’s handy for interacting with canisters locally and building some community canisters.
+
+#### Install `didc`
+
+* macOS: `brew install dfinity/tap/didc` (or download a release binary if available)
+* Linux/WSL: download a `didc` binary for your architecture (or build from source) and put it on your `PATH`.
+* Windows: use **WSL** (Ubuntu) and follow Linux steps.
+
+> If you can’t find a packaged binary, you can still **encode** simple arguments with small scripts or use the Proposal Verifier app’s helpers.
+
+### OS-specific notes
+
+**Windows (best: WSL2 + Ubuntu)**
+
+1. Install **WSL2** and Ubuntu from the Microsoft Store.
+2. Inside Ubuntu: `sudo apt update && sudo apt install -y git docker.io curl coreutils`
+3. Add your WSL user to the `docker` group; restart your WSL session.
+4. Install `dfx` via `dfxvm` (see above).
+
+**macOS**
+
+1. Install **Homebrew**; then: `brew install git docker coreutils`
+2. Install Docker Desktop (start it to run Docker daemon).
+3. Install `dfx` via `dfxvm`.
+
+**Linux (Ubuntu/Debian)**
+
+```bash
+sudo apt update
+sudo apt install -y git docker.io curl coreutils
+# start/enable docker service depending on distro
 ```
 
-1. **Fetch:** Use the app, dashboard, or `dfx canister call` on the governance canister.
-2. **Extract:** Parse for commits, hashes, URLs (app auto-does; manual: grep summary).
-3. **Rebuild/Hash:** Type-specific (e.g., IC-OS: `repro-check.sh` from GitHub ic repo).
-4. **Check Integrity:** Match hashes; review forum/wiki.
-5. **Share:** Post results/logs to forum.dfinity.org (Governance > NNS proposal discussion).
+Then install `dfx` via `dfxvm`.
 
-This guide covers verification using the Proposal Verifier app (deployed on ICP) and manually (without the app). The app accelerates the process but burns cycles (ICP fees) for on-chain fetches. Manual methods are free but require more setup.
+---
 
-## Key Concepts: Hashes, Git Commits, Arguments, and Binaries
+## 6. Two workflows at a glance (diagrams)
 
-Understanding these basics is crucial for verification:
+### A. Manual verification (no app)
 
-- **Hashes (e.g., SHA-256):** A hash is a "digital fingerprint"—a fixed-length string (64 hex characters for SHA-256) unique to the input data. Change one byte, and the hash changes entirely. Proposals include hashes for WASM/binaries/docs; recompute them locally to verify integrity. Example: Hash a PDF with `sha256sum file.pdf` (Linux) or `shasum -a 256 file.pdf` (Mac). Tools: `sha256sum` (Linux), `shasum` (Mac), or online (but prefer local for security). The `wasm_module_hash` fingerprints the code being installed (WASM module), while `arg_hash` fingerprints the parameters to that code. For upgrades, compare both.
+```mermaid
+flowchart TD
+  A[Find proposal ID] --> B[Open ICP Dashboard/IC API]
+  B --> C[Extract repo + commit + expected hashes]
+  C --> D[Clone repo & checkout commit]
+  D --> E[Rebuild binaries or download release]
+  E --> F[sha256sum raw/gz WASM]
+  F --> G{Matches expected?}
+  G -- yes --> H[Encode args with didc & sha256]
+  H --> I{arg_hash matches?}
+  I -- yes --> J[Publish verification report]
+  G -- no --> K[Troubleshoot (see section 13)]
+  I -- no --> K
+```
 
-- **Git Commits:** Snapshots of code changes in repositories (e.g., GitHub). Identified by 40-hex SHA-1 hashes (e.g., `ec35ebd252d4ffb151d2cfceba3a86c4fb87c6d6`). Proposals reference commits—verify existence via GitHub API (`GET /repos/{owner}/{repo}/commits/{sha}`) or browser. Ensure the commit matches the proposal's description to avoid wrong versions.
+### B. With the Proposal Verifier app
 
-- **Arguments (Payload):** Data like Candid-encoded params or hex bytes. Verify by re-encoding (e.g., with `didc`) and hashing; match `arg_hash`. Candid is a serialization format for ICP interfaces—use `didc encode '(record { ... })' | xxd -r -p | sha256sum` to get the hash. Null args often hash to `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` (empty bytes) or other common values depending on encoding.
+```mermaid
+flowchart TD
+  A[Login to app] --> B[Deposit ICP to per-user subaccount]
+  B --> C[Enter proposal ID]
+  C --> D[App fetches on-chain & dashboard/api data]
+  D --> E[Shows repo/commit, expected hashes, payload]
+  E --> F[Optional: Rebuild locally; paste hashes]
+  F --> G[Mark checklist & export report]
+```
 
-- **Binaries (e.g., WASM or IC-OS Images):** Executables like WASM (canisters) or IC-OS images (.tar.zst). Rebuild from commit (e.g., via `repro-check.sh` from ic repo README) and hash; match `wasm_module_hash` or `release_package_sha256_hex`. Reproducible builds ensure the binary matches the source code exactly.
+---
 
-These elements ensure proposals are tamper-proof. Mismatches indicate errors or foul play.
+## 7. Full step-by-step (manual method)
 
-## Proposal Types and What Needs to Be Verified
+1. **Identify the proposal**
+   Find the ID (e.g., from NNS dapp or Dashboard). The Dashboard page usually shows **“Wasm Verification”** for install/upgrade proposals with the expected hash.
 
-Proposals group by topics (e.g., ProtocolCanisterManagement for NNS upgrades). Verification varies by type (binaries for code, docs for providers). Here's a breakdown:
+2. **Open Dashboard & API**
 
-- **ProtocolCanisterManagement:** Manage essential canisters (e.g., NNS governance, registry, ICP ledger).
-  - Types: InstallCode (upgrade/reinstall canister), UpdateCanisterSettings, StopOrStartCanister, HardResetNnsRootToVersion.
-  - Verify: Rebuild WASM from commit, hash and match `wasm_module_hash`. Encode args with `didc`, hash bytes, match `arg_hash`. Check commit exists.
+   * Dashboard proposal page: read title, summary, and payload.
+   * IC API: `https://ic-api.internetcomputer.org/api/v3/proposals/<ID>` to extract fields like payload, `arg_hash`, release URLs, etc.
 
-- **ServiceNervousSystemManagement:** Manage SNS canisters (e.g., upgrades, SNS-W additions).
-  - Types: InstallCode, UpdateCanisterSettings, StopOrStartCanister, AddSnsWasm, InsertSnsWasmUpgradePathEntries.
-  - Verify: Similar to above—rebuild WASM, match hashes. For path entries, review parameters.
+3. **Confirm the source commit**
+   The summary or payload usually links to a **GitHub repo + commit**. Open it and ensure it exists and matches what’s stated (commit SHA or tag).
 
-- **ApplicationCanisterManagement:** Manage other NNS-controlled canisters (e.g., Bitcoin, ckBTC).
-  - Types: InstallCode, UpdateCanisterSettings, StopOrStartCanister, BitcoinSetConfig.
-  - Verify: Rebuild from repo/commit, match WASM hash. For configs, review fields vs. topology.
+4. **Rebuild or download artifacts**
 
-- **IcOsVersionElection:** Elect new IC-OS versions (HostOS/GuestOS).
-  - Types: ReviseElectedGuestosVersions, ReviseElectedHostosVersions.
-  - Verify: Use `repro-check.sh` from ic repo at commit, hash artifacts, match proposal's `release_package_sha256_hex`.
+   * For NNS/IC repos: clone repo, checkout the commit, run official scripts (see §9).
+   * For IC-OS releases: use the published release package link and verify the **SHA-256** reported in the proposal.
 
-- **IcOsVersionDeployment:** Deploy elected IC-OS versions to nodes/subnets.
-  - Types: DeployHostosToSomeNodes, DeployGuestosToAllSubnetNodes, DeployGuestosToSomeApiBoundaryNodes, DeployGuestosToAllUnassignedNodes.
-  - Verify: Download package from URL, `sha256sum`, match `release_package_sha256_hex`. Check targeted nodes/subnets.
+5. **Compute hashes & compare**
 
-- **Governance:** High-reward (20x) motions or defaults.
-  - Types: Motion (polls, no on-chain effect), UninstallCode, SetDefaultFollowees, RegisterKnownNeuron.
-  - Verify: Manual—read summary, check forum. No hashes/binaries.
+   * Run `sha256sum <file.wasm>` and, if the proposal specifies gzipped **WASM (gz)**, also `sha256sum <file.wasm.gz>`.
+   * Compare with Dashboard’s “Proposed WASM (gz) SHA-256” (or similar label).
 
-- **SnsAndCommunityFund:** SNS swaps and Neurons' Fund.
-  - Types: CreateServiceNervousSystem.
-  - Verify: Review params (tokens, swap), match docs/hashes. High-reward (20x).
+6. **Verify arguments (`arg_hash`)**
 
-- **NetworkEconomics:** Adjust rewards/economics.
-  - Types: UpdateNodeProviderRewardConfig, UpdateIcpXdrConversionRate.
-  - Verify: Manual—compare tables/params to prior values.
+   * Encode the exact Candid args with **`didc encode`** or equivalent.
+   * Hash the **encoded bytes**: `sha256sum <(didc encode '(<your args>)')` (see §10 for details & null/empty cases).
+   * Compare with the `arg_hash` shown on Dashboard/API.
 
-- **SubnetManagement:** Change topology/config.
-  - Types: CreateSubnet, UpdateConfigOfSubnet, AddNodeToSubnet, RemoveNodesFromSubnet, ChangeSubnetMembership, RecoverSubnet, SetFirewallConfig, etc.
-  - Verify: Check IDs/config diffs. Manual for routing/firewall.
+7. **Write and publish your verification**
+   Include: proposal ID, links, commands/logs, computed hashes, arg checks, and any caveats (see §12).
 
-- **ParticipantManagement:** Administer node/data center providers.
-  - Types: AddOrRemoveNodeProvider, AddOrRemoveDataCenters.
-  - Verify: Download PDFs from wiki, hash, match proposal. Check forum intro, identity docs.
+---
 
-- **NodeAdmin:** Manage node machines.
-  - Types: AssignNoid, UpdateNodeOperatorConfig, RemoveNodeOperators, RemoveNodes, UpdateSshReadonlyAccessForAllUnassignedNodes.
-  - Verify: Check allowances/IDs vs. topology. Manual.
+## 8. Full step-by-step (Proposal Verifier app)
 
-- **KYC:** KYC Genesis neurons.
-  - Types: ApproveGenesisKYC.
-  - Verify: Manual—principals match list.
+**Live app:** `https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/`
+**Source repo:** `https://github.com/dickhery/proposal_verifier`
 
-- **NeuronManagement:** Restricted—followers manage neuron.
-  - Types: ManageNeuron.
-  - Verify: Manual—target neuron/permissions.
+> The app runs **on-chain** (Internet Computer). When it fetches a proposal and related data, it performs **HTTPS outcalls** and governance queries which burn **cycles** on the backend canister. Therefore, **each fetch has a small fee** (collected from your per-user deposit subaccount). You’ll see your deposit address in-app and can top it up with ICP.
 
-For all: Start with fetch/extract, end with share. Binaries need rebuilds; docs need hashes; motions need reading.
+**Using the app**
 
-## Setup and Dependencies
+1. **Login** (Internet Identity).
+2. **Fund deposit** (the app shows your per-user deposit account identifier).
+3. Enter a **proposal ID** → the app fetches on-chain data + dashboard/API JSON.
+4. The app parses out **expected hashes**, **repo/commit**, and **payload** details.
+   You can optionally **rebuild locally**, then paste your computed hashes to confirm.
+5. Use the **checklist** and **export** actions to publish a “Proposal Verified” report.
 
-Use a clean environment (VM/Docker) to avoid tampering. Ubuntu 22.04 recommended for repro-builds.
+> Want to host your own copy? See §14 to clone, switch the beneficiary address, and deploy. You pay only for your own cycles.
 
-### Windows (Using WSL)
+---
 
-1. Install WSL: Open PowerShell as admin, run `wsl --install` (reboot if needed).
-2. In WSL (Ubuntu): `sudo apt update && sudo apt install git curl docker.io jq build-essential sha256sum xxd`.
-3. Rust/didc: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then `cargo install didc`.
-4. Docker: Install Docker Desktop (Windows), enable WSL integration.
+## 9. Rebuilding & hashing binaries (IC canisters & IC-OS)
 
-**Issues:** Docker not starting—ensure WSL2 backend; low resources—edit .wslconfig for limits.
+### A. Protocol/Application canisters (IC repo example)
 
-### macOS
+Use the official containerized build to reproduce artifacts:
 
-1. Install Homebrew: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`.
-2. Tools: `brew install git curl docker jq coreutils sha2 shasum xxd`.
-3. Rust/didc: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then `cargo install didc`.
-4. Docker: Use Docker Desktop or Colima as alternative.
+```bash
+git clone https://github.com/dfinity/ic
+cd ic
+git fetch --all
+git checkout <COMMIT>
+./ci/container/build-ic.sh -c
+# Artifacts appear under ./artifacts/canisters/...
+sha256sum ./artifacts/canisters/*.wasm
+sha256sum ./artifacts/canisters/*.wasm.gz  # if proposal expects gz hash
+```
 
-**Issues:** Use `shasum -a 256` for hashes; Colima for Docker alternatives.
+Then compare your SHA-256 to the **expected** hash shown on the Dashboard (labels like “Proposed WASM (gz) SHA-256”).
 
-### Linux (Ubuntu Recommended)
+### B. IC-OS releases (GuestOS/HostOS)
 
-1. `sudo apt update && sudo apt install git curl docker.io jq build-essential sha256sum xxd`.
-2. Rust/didc: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then `cargo install didc`.
-3. Docker: Add user to docker group (`sudo usermod -aG docker $USER`), logout/login.
+IC-OS proposals usually link a **release package**; you’ll either:
 
-**Issues:** Docker fails—use rootless podman; clean repo with `git clean -fdx`.
+* Download and hash it directly (compare to the proposal’s release SHA-256), or
+* Run the official **repro-check** script (from the IC repo) that reproduces the release and prints hashes to compare.
 
-### Common Tools Across Platforms
+---
 
-- **git:** For cloning repos.
-- **curl:** Fetch URLs.
-- **docker:** Builds/repros.
-- **jq:** Parse JSON.
-- **sha256sum/shasum:** Hashes.
-- **xxd:** Hex/bytes conversion.
-- **didc:** Candid encoding.
-- **dfx:** ICP CLI for manual fetches (install from sdk.dfinity.org).
+## 10. Arguments & `arg_hash` verification (including “null”/empty cases)
 
-Test: `sha256sum --version`, `didc --version`.
+**What is `arg_hash`?**
+For install/upgrade proposals, the governance payload often includes **`arg_hash`** = **SHA-256 of the Candid-encoded argument bytes**. To verify:
 
-## Using the Proposal Verifier App
+1. Determine the **exact** Candid value (from the proposal payload or docs).
+2. Encode it with **`didc`** (or another Candid encoder).
+3. Hash the bytes with SHA-256 and compare to `arg_hash`.
 
-### App Overview and Deployment
+**Examples with `didc`**
 
-The Proposal Verifier app (https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/) is deployed on the ICP blockchain. It fetches proposals, extracts data (commits/hashes/URLs), assists hashing, and tracks checklists. Backend uses HTTPS outcalls for GitHub/ic-api; frontend is lit-html UI.
+* **Empty arguments** (no args / Candid `()`):
 
-Repo: https://github.com/dickhery/proposal_verifier. Clone/deploy your own to control costs.
+  ```bash
+  didc encode '()' | shasum -a 256
+  # commonly observed hash: 0fee102bd16b05302d3f44c393c4b8b0cdabe88f51256733b8071bdf7d53da4e
+  ```
 
-### Costs and Cycles
+  The above 64-hex value appears in real upgrade proposals when **no arguments** are passed.
 
-Fetching burns cycles (e.g., 0.2 ICP + fee per fetch) for on-chain calls/outcalls. Fees forward to address `2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e`. Fund your subaccount first.
+* **Explicit `null`** (Candid `null`) vs `()`
+  `null` is a typed Candid value and **not** the same as `()` (empty). If a proposal says the argument is `null`, encode **`(null)`** instead of `()`. The **hash will be different** because the encoded bytes differ. Use:
 
-### Deploying Your Own Version
+  ```bash
+  didc encode '(null)' | shasum -a 256
+  ```
 
-1. Clone: `git clone https://github.com/dickhery/proposal_verifier`.
-2. Change deposit address in main.mo (line ~561) to yours.
-3. Replace frontend/backend canister references in dfx.json/package.json.
-4. `dfx deploy` (see README for details).
-5. Fund cycles as needed.
+  > Tip: When comparing “null-like” payloads, always check the exact Candid being used—`()` vs `(null)` vs `record {}` produce different bytes and therefore different hashes.
 
-## Step-by-Step Verification with the Proposal Verifier App
+* **Blob/vec examples**
 
-Login with Internet Identity (fund balance first).
+  ```bash
+  # blob from hex escapes
+  didc encode '(blob "\00\ab\ff")' | shasum -a 256
 
-### Fetch Proposal
+  # vec of bytes
+  didc encode '(vec {1; 2; 255})' | shasum -a 256
+  ```
 
-Enter ID (e.g., 129394), click “Fetch” (costs 0.2 ICP + fee). Snapshot balances post-bill.
+**Gz vs raw WASM note**
+Proposals often state the expected hash of the **gzipped WASM**. Hash **both** the raw `.wasm` and `.wasm.gz` and match whichever the proposal references (labels like “Proposed WASM (gz) SHA-256”).
 
-**Issues:** Invalid ID—check dashboard; low balance—fund more.
+---
 
-### Review Extracted Data
+## 11. Manual-heavy proposals (controllers, motions, participants)
 
-Check repo/commit (auto-verifies GitHub), hashes, URLs. Status: ✅ if commit exists.
+Some proposals don’t involve bytecode:
 
-**Issues:** Missing commit—add from summary manually.
+* **Add/Remove Controllers (canister settings)**
 
-### Verify Arg Hash
+  * Payload contains **principal IDs** to be added/removed.
+  * Verify those principals are the intended ones (cross-check in the forum thread and any linked docs).
+  * If you control the canister locally you can call `canister_status` via the **management canister** to see current controllers; but note only controllers (or the NNS for system canisters) can query this on mainnet.
+  * Outcome check: controllers list should reflect exactly what the payload specifies after execution.
 
-1. Paste args (e.g., Candid from payload snippet).
-2. Select type (Candid: encode with didc).
-3. Click “Verify”; match ✅.
+* **Motion (Governance) proposals**
 
-**Issues:** Mismatch—wrong encoding; use `didc encode '(record { ... })' | xxd -r -p | sha256sum`. Common null hashes: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` (empty).
+  * Text-only, expressing intent or policy.
+  * Verify clarity, scope, and that it **does not** implicitly authorize actions beyond what it states. Motions don’t deploy code.
 
-### Verify Documents/Files
+* **Participant / Node provider changes**
 
-Upload files (e.g., PDFs); app hashes & compares. Or fetch URLs (text only).
+  * Check identity documents or hashes (e.g., PDF hashes), forum due diligence, and that the principals match the intended entities.
+  * Hash any linked PDFs yourself: `sha256sum file.pdf` and compare.
 
-**Issues:** CORS block—use canister fetch; binary—upload local. Hash mismatch—wrong file; diff bytes.
+---
 
-### Rebuild Locally
+## 12. Publishing a verification report
 
-Copy rebuild script; run in terminal; compare hash to expected.
+A good report makes your work easy to reproduce:
 
-**Issues:** Fails—check deps/OS; clean repo (`git clean -fdx`).
+* **Header**: proposal ID, title, links (NNS dapp & Dashboard), repo+commit, proposer (if listed).
+* **Hashes**: your computed raw/gz WASM hashes and expected hash from the proposal.
+* **Args**: the exact Candid value you encoded and the resulting `sha256`.
+* **Build log**: key commands you ran and their outputs.
+* **Conclusion**: “Verified” / “Mismatch” with brief notes.
+* **Artifacts**: attach logs or paste hashes as code blocks.
 
-### Complete Checklist
+The Dashboard’s “Verify proposals” page is a good reference for structuring your steps and commands.
 
-Mark items (e.g., “Rebuild Done”); app tracks. Override for manual (e.g., policy review).
+---
 
-### Export and Share Results
+## 13. Troubleshooting & common pitfalls
 
-Export JSON/Markdown; post to forum.dfinity.org with results/logs. Include: ID, hashes (yours vs. proposal), rebuild logs, mismatches, commands/versions.
+* **Hash mismatch**
 
-## Step-by-Step Verification Manually (Without the App)
+  * Check if the **proposal expects gzipped** WASM. Hash **`.wasm.gz`** if so.
+  * Make sure you checked out the **exact commit** (no uncommitted changes, right branch/tag).
+  * Rebuild in a **clean** environment (Docker build script).
 
-Parallel to app; use setup tools.
+* **`arg_hash` mismatch**
 
-### Fetch Proposal
+  * Confirm the **exact Candid** shape: `()` vs `(null)` vs `record {}` are different.
+  * Encode precisely with `didc`.
+  * Some proposals encode **empty args**; when truly empty, the commonly observed arg hash for `()` is
+    `0fee102bd16b05302d3f44c393c4b8b0cdabe88f51256733b8071bdf7d53da4e`.
 
-`dfx canister call rrkah-fqaaa-aaaaa-aaaaq-cai get_proposal_info '(ID)' --network ic`. Or dashboard.internetcomputer.org/proposal/ID.
+* **IC-OS release not matching**
 
-**Issues:** Wrong network—use `--network ic`; Candid parse—use `didc decode`.
+  * Make sure you used the **release package** or the official **repro-check** for the same commit/version.
 
-### Extract Data
+* **API JSON lacks fields**
 
-Parse Candid for summary/URLs/commit/hashes (use jq for JSON from ic-api.internetcomputer.org/api/v3/proposals/ID).
+  * The IC API (`/api/v3/proposals/<id>`) is helpful but sometimes omits context; always cross-read the Dashboard page and proposal summary.
 
-**Issues:** Candid parse—use `didc decode`.
+* **Environment issues (Windows)**
 
-### Verify Commit
+  * Use **WSL2** and run everything inside Ubuntu; ensure Docker daemon is running and your user is in the `docker` group.
 
-`curl https://api.github.com/repos/OWNER/REPO/commits/SHA`; check 200.
+---
 
-**Issues:** Rate limit—use token.
+## 14. Using the Proposal Verifier app locally (clone, configure, deploy)
 
-### Verify Arg Hash
+**Why self-host?**
+Running your own instance means you control your cycles and pay only your own costs.
 
-Extract args from payload (Candid? `didc encode ‘(record { … })’ | xxd -r -p | sha256sum`). Compare to `arg_hash`.
+**Repo**: `https://github.com/dickhery/proposal_verifier`
 
-**Issues:** Encoding error—match fields/order. Null: hash empty bytes.
+**Before you deploy your fork:**
 
-### Verify Documents/Files
+1. **Change the beneficiary address** (where ICP fees are forwarded) from
+   `2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e`
+   to **your** account identifier (64-hex). This constant appears in the backend code.
+2. **Replace canister IDs** (frontend/backend) after your first local deploy (`dfx deploy`) so your frontend points to *your* backend canister.
+3. Review the repo **README** for any per-env notes (e.g., Content-Security-Policy, Internet Identity config, etc.).
 
-Download from URL; `sha256sum file.pdf`; match proposal.
+**Basic local steps**
 
-**Issues:** Wrong URL—check summary.
+```bash
+# in project root
+npm install
+dfx start --clean --background
+dfx deploy
+# start the frontend workspace
+npm start
+```
 
-### Rebuild Binaries
+**Production deploy**
 
-- IC-OS: Clone ic repo, checkout commit, `repro-check.sh`.
-- WASM: Clone repo, build (`./ci/container/build-ic.sh -c`); `sha256sum artifact`. Match `wasm_module_hash`.
+* Create mainnet canisters with `dfx`, set cycles, and deploy the backend first.
+* Update the frontend `declarations` and CSP as needed, then deploy the asset canister.
+* Test a fetch on a known proposal (see §15 “Known-good sanity checks”).
 
-**Issues:** Env mismatch—use Ubuntu 22.04/Docker.
+> **Fees**: The app charges a **per-fetch** fee because HTTPS outcalls and governance queries **burn cycles** on the backend. You’ll see (and fund) your **per-user deposit subaccount** in the UI; the app forwards the fee to the configured beneficiary address.
 
-### Complete Checklist
+---
 
-Track manually (notes). Use workflow diagram.
+## 15. Quick checklists
 
-### Share Results
+### A. “Proposal Verified” (binary-bearing proposals)
 
-Post hashes/results/logs to forum.dfinity.org (Governance > NNS proposal discussion). Include commands/outputs.
+* [ ] Open Dashboard + API for **<ID>**. Extract **expected hash** & any **arg_hash**.
+* [ ] Follow repo link & **checkout the commit**.
+* [ ] **Rebuild** with the official script (Docker).
+* [ ] Compute **sha256** of **raw** and/or **gzipped** WASM (as the proposal specifies).
+* [ ] **Compare** with expected.
+* [ ] **Encode args** with `didc` (exact Candid), **sha256** the bytes, compare to `arg_hash`.
+* [ ] Publish your **report** with commands + logs.
 
-## Verifying Proposals That Require Mostly Manual Review
+### B. Manual verification (controllers/participants/motions)
 
-Some proposals lack binaries/hashes; focus on intent/policy.
+* [ ] Read payload and **list all principals** and values to change.
+* [ ] Confirm identities with forum context and/or documentation.
+* [ ] For motions, confirm scope and that no implicit authorization is hidden.
+* [ ] Publish your **report**.
 
-### Motion Proposals
+### C. Known-good sanity checks
 
-Text-only polls for strategy. No on-chain effect.
+* **Empty args (`()`)** hash you can reproduce:
+  `didc encode '()' | shasum -a 256` → commonly `0fee102b...d53da4e`.
+* **WASM (gz)** vs **WASM** difference: Ensure you hash the correct one per Dashboard’s label.
 
-Verify: Read summary/forum; ensure matches title/context. No hashes—adopt if aligns with community.
+---
 
-### Add/Remove Controllers
+### Appendix: Where to look things up quickly
 
-Update canister controllers.
+* **Verify Proposals (official guide)** — commands & “Wasm Verification” section.
+* **Proposals overview / topics & types** — know the intent and what to verify for each class.
+* **IC API proposals endpoint** — machine-readable payloads & fields.
+* **Install `dfx` via dfxvm** — modern install path.
+* **Real-world empty-arg hash** example (`()`) — matches observed proposal arg hash.
 
-Verify: Check principals match proposal/topology. Manual review of changes.
+---
 
-### Other Manual-Heavy Types
+## License & Sharing
 
-- **NeuronManagement:** Verify target neuron/permissions.
-- **KYC (ApproveGenesisKYC):** Principals match list.
-- **NetworkEconomics:** Compare params to prior.
-- **SubnetManagement:** IDs/config diffs valid.
+This guide is intended to be open, remixable, and shareable. Please keep steps reproducible and transparent—so **anyone** in the community can follow along and independently reach the same conclusion.
 
-## Troubleshooting Common Problems
+---
 
-### Hash Mismatches
+**Notes for readers of this guide:**
 
-- Wrong encoding (`didc` for Candid); file diffs (`diff`); commit errors (checkout precisely).
-- Solution: Re-encode; download exact; retry build. Null args: hash empty (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`) or unit (`44e525001ffbc076eb1fcaa896 pon`—check encoding).
-
-### Build Failures
-
-- Missing deps (install per setup); wrong OS (Ubuntu VM); dirty repo (`git clean -fdx`).
-- Solution: Follow README; retry.
-
-### CORS Blocks or Fetch Issues
-
-- Dynamic sites—use browser; non-CORS—canister HTTPS.
-- Solution: App uses outcalls; manual: curl (CORS-safe).
-
-### didc Errors
-
-- Syntax—match Motoko grammar; install Rust.
-- Solution: Check fields/order; test simple encodes.
-
-### Proposal Not Found
-
-- Wrong ID—check dashboard; network—use `--network ic`.
-
-### Balances/Fees Issues
-
-- Low—fund deposit; wrong subaccount—refresh.
-- Solution: Send more ICP; double-check address.
-
-### App-Specific Issues
-
-- Fetch fails—login/fund; CORS—use canister fetch.
-- Solution: Deploy own version; check README.
-
-## Sharing Results
-
-Post to forum.dfinity.org (Governance > NNS proposal discussion; tag topic). Include: ID, hashes (yours vs. proposal), rebuild logs, mismatches, commands/versions. Use Gist/GitHub for logs/scripts. Sharing builds trust; enables reproduction.
-
-## Additional Resources
-
-- ICP Dashboard: dashboard.internetcomputer.org
-- Developer Forum: forum.dfinity.org (Governance category)
-- IC Repo: github.com/dfinity/ic
-- SNS Repo: github.com/dfinity/sns
-- NNS dapp: nns.ic0.app
-- Verify-Proposals Guide: internetcomputer.org/docs/current/developer-docs/daos/nns/concepts/proposals/verify-proposals
+* The **Proposal Verifier app** is deployed on the Internet Computer at `https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/`. Each fetch consumes cycles and charges a small fee. You may **clone and deploy your own** copy from `https://github.com/dickhery/proposal_verifier`; before deploying, change the beneficiary address and update canister IDs so your frontend points to your backend.
+* If you’re new, start with **IC-OS** or **simple canister upgrade** proposals; they’re the most straightforward to reproduce and hash. Then move on to controller or participant proposals to practice manual reviews.
