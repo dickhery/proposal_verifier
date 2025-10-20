@@ -2005,7 +2005,7 @@ ${linuxVerify}</pre>
           </ol>
           <p>
             Need broader context? The <a
-              href="https://internetcomputer.org/docs/current/developer-docs/integrations/nns/governance/verify-proposals"
+              href="https://internetcomputer.org/docs/building-apps/governing-apps/nns/concepts/proposals/verify-proposals/"
               target="_blank"
               rel="noreferrer noopener"
               >proposal verification guide</a
