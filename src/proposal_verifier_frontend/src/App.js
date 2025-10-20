@@ -3056,7 +3056,10 @@ ${linuxVerify}</pre>
 
               <section>
                 <h2>Payload (from Dashboard/API)</h2>
-                <pre>${this.payloadSnippetFromDashboard ?? '(no payload snippet found from ic-api)'}</pre>
+                <pre>${
+                  this.payloadSnippetFromDashboard ??
+                  '(no payload snippet found from dashboard)'
+                }</pre>
                 <button
                   class="btn"
                   @click=${(e) => this.#handleCopy(e, this.payloadSnippetFromDashboard || '', 'Copy Payload')}

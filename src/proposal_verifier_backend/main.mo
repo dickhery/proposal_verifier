@@ -1532,14 +1532,237 @@ persistent actor verifier {
     );
   };
 
-  func extractPayloadSnippetFromJson(jsonText : Text) : ?Text {
-    switch (indexOf(jsonText, "\"payload\"")) {
-      case null null;
-      case (?p) {
-        let end = Nat.min(Text.size(jsonText), p + 1500);
-        ?textSlice(jsonText, p, end);
+  func isWhitespaceChar(ch : Char) : Bool {
+    let code = Char.toNat32(ch);
+    code == 32 or code == 9 or code == 10 or code == 13;
+  };
+
+  func trimWhitespace(t : Text) : Text {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    var start : Nat = 0;
+    label startLoop while (start < n) {
+      if (isWhitespaceChar(chars[start])) {
+        start += 1;
+      } else {
+        break startLoop;
       };
     };
+    var finish : Nat = n;
+    label endLoop while (finish > start) {
+      if (isWhitespaceChar(chars[finish - 1])) {
+        finish -= 1;
+      } else {
+        break endLoop;
+      };
+    };
+    Text.fromIter(Array.slice<Char>(chars, start, finish));
+  };
+
+  func findCharFrom(t : Text, from : Nat, target : Char) : ?Nat {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    var i = from;
+    while (i < n) {
+      if (chars[i] == target) return ?i;
+      i += 1;
+    };
+    null;
+  };
+
+  func findFirstNonWhitespace(t : Text, from : Nat) : ?Nat {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    var i = from;
+    while (i < n) {
+      if (not isWhitespaceChar(chars[i])) return ?i;
+      i += 1;
+    };
+    null;
+  };
+
+  func hexDigitValue(ch : Char) : ?Nat32 {
+    let code = Char.toNat32(ch);
+    if (code >= 48 and code <= 57) {
+      ?(code - 48);
+    } else if (code >= 65 and code <= 70) {
+      ?(code - 55);
+    } else if (code >= 97 and code <= 102) {
+      ?(code - 87);
+    } else {
+      null;
+    };
+  };
+
+  func consumeJsonStringLiteral(t : Text, start : Nat) : ?{ value : Text; end : Nat } {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    if (start >= n or chars[start] != '"') return null;
+
+    let buf = Buffer.Buffer<Char>(0);
+    var i = start + 1;
+    var escape = false;
+    while (i < n) {
+      let ch = chars[i];
+      let code = Char.toNat32(ch);
+      if (escape) {
+        switch (code) {
+          case 34 { buf.add('"') };
+          case 92 { buf.add('\') };
+          case 47 { buf.add('/') };
+          case 98 { buf.add(Char.fromNat32(8)) };
+          case 102 { buf.add(Char.fromNat32(12)) };
+          case 110 { buf.add('\n') };
+          case 114 { buf.add('\r') };
+          case 116 { buf.add('\t') };
+          case 117 {
+            if (i + 4 >= n) return null;
+            var cp : Nat32 = 0;
+            var j : Nat = 1;
+            label digits while (j <= 4) {
+              switch (hexDigitValue(chars[i + j])) {
+                case (?v) { cp := cp * 16 + v };
+                case null { return null };
+              };
+              j += 1;
+            };
+            buf.add(Char.fromNat32(cp));
+            i += 4;
+          };
+          case _ { return null };
+        };
+        escape := false;
+      } else {
+        if (code == 92) { // '\'
+          escape := true;
+        } else if (code == 34) { // '"'
+          let decoded = Text.fromIter(buf.vals());
+          return ?{ value = decoded; end = i + 1 };
+        } else {
+          buf.add(ch);
+        };
+      };
+      i += 1;
+    };
+    null;
+  };
+
+  func consumeBareJsonToken(t : Text, start : Nat) : Text {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    var i = start;
+    while (i < n) {
+      let code = Char.toNat32(chars[i]);
+      if (code == 44 or code == 125 or code == 93 or code == 10 or code == 13) {
+        break;
+      };
+      i += 1;
+    };
+    trimWhitespace(textSlice(t, start, i));
+  };
+
+  func findBalancedFromBracket(t : Text, bracketPos : Nat) : ?Text {
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    if (bracketPos >= n or chars[bracketPos] != '[') return null;
+    var depth : Nat = 0;
+    var i = bracketPos;
+    var inString = false;
+    var escaped = false;
+    while (i < n) {
+      let ch = chars[i];
+      let code = Char.toNat32(ch);
+      if (inString) {
+        if (escaped) {
+          escaped := false;
+        } else if (code == 92) {
+          escaped := true;
+        } else if (code == 34) {
+          inString := false;
+        };
+      } else {
+        if (code == 34) {
+          inString := true;
+        } else if (code == 91) { // '['
+          depth += 1;
+        } else if (code == 93) { // ']'
+          if (depth == 0) { return null };
+          depth -= 1;
+          if (depth == 0) {
+            return ?textSlice(t, bracketPos, i + 1);
+          };
+        };
+      };
+      i += 1;
+    };
+    null;
+  };
+
+  func extractPayloadSnippetFromJson(jsonText : Text) : ?Text {
+    let markers = [
+      "\"payload_text_rendered\"",
+      "\"payload_text\"",
+      "\"payloadText\"",
+      "\"payload_json\"",
+      "\"payloadJson\"",
+      "\"payload_bytes\"",
+      "\"payloadBytes\"",
+      "\"payload\"",
+    ];
+    for (marker in markers.vals()) {
+      switch (indexOf(jsonText, marker)) {
+        case null {};
+        case (?pos) {
+          switch (findCharFrom(jsonText, pos + Text.size(marker), ':')) {
+            case null {};
+            case (?colon) {
+              switch (findFirstNonWhitespace(jsonText, colon + 1)) {
+                case null {};
+                case (?valueStart) {
+                  let chars = Text.toArray(jsonText);
+                  if (valueStart >= Array.size(chars)) {
+                    (); // continue searching other markers
+                  } else {
+                    let ch = chars[valueStart];
+                    if (ch == '"') {
+                      switch (consumeJsonStringLiteral(jsonText, valueStart)) {
+                        case (?info) {
+                          let trimmed = trimWhitespace(info.value);
+                          if (Text.size(trimmed) > 0) {
+                            return ?trimmed;
+                          };
+                        };
+                        case null {};
+                      };
+                    } else if (ch == '{') {
+                      switch (findBalancedFromBrace(jsonText, valueStart)) {
+                        case (?obj) {
+                          let trimmed = trimWhitespace(obj);
+                          if (Text.size(trimmed) > 0) return ?trimmed;
+                        };
+                        case null {};
+                      };
+                    } else if (ch == '[') {
+                      switch (findBalancedFromBracket(jsonText, valueStart)) {
+                        case (?arrText) {
+                          let trimmed = trimWhitespace(arrText);
+                          if (Text.size(trimmed) > 0) return ?trimmed;
+                        };
+                        case null {};
+                      };
+                    } else {
+                      let token = consumeBareJsonToken(jsonText, valueStart);
+                      if (Text.size(token) > 0) return ?token;
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    null;
   };
 
   // -------- Extract likely Candid arg text from a payload snippet -------
