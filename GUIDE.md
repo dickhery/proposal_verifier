@@ -1,4 +1,4 @@
-# GUIDE.md — Internet Computer Proposal Verification (Manual & With the Proposal Verifier App)
+# Internet Computer Proposal Verification Guide (Manual & With the Proposal Verifier App)
 
 > A practical, beginner-friendly handbook to verify NNS proposals step-by-step, rebuild binaries, check argument hashes, and publish your results. It also shows how to use the **Proposal Verifier** app and how to verify **manually in parallel**.
 
