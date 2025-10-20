@@ -1598,6 +1598,13 @@ persistent actor verifier {
     let chars = Text.toArray(t);
     let n = Array.size(chars);
     let doubleQuote = Char.fromNat32(34);
+    let backslash = Char.fromNat32(92);
+    let forwardSlash = Char.fromNat32(47);
+    let backspace = Char.fromNat32(8);
+    let formFeed = Char.fromNat32(12);
+    let newLine = Char.fromNat32(10);
+    let carriageReturn = Char.fromNat32(13);
+    let tab = Char.fromNat32(9);
     if (start >= n or chars[start] != doubleQuote) return null;
 
     let buf = Buffer.Buffer<Char>(0);
@@ -1609,13 +1616,13 @@ persistent actor verifier {
       if (escape) {
         switch (code) {
           case 34 { buf.add(doubleQuote) };
-          case 92 { buf.add('\') };
-          case 47 { buf.add('/') };
-          case 98 { buf.add(Char.fromNat32(8)) };
-          case 102 { buf.add(Char.fromNat32(12)) };
-          case 110 { buf.add('\n') };
-          case 114 { buf.add('\r') };
-          case 116 { buf.add('\t') };
+          case 92 { buf.add(backslash) };
+          case 47 { buf.add(forwardSlash) };
+          case 98 { buf.add(backspace) };
+          case 102 { buf.add(formFeed) };
+          case 110 { buf.add(newLine) };
+          case 114 { buf.add(carriageReturn) };
+          case 116 { buf.add(tab) };
           case 117 {
             if (i + 4 >= n) return null;
             var cp : Nat32 = 0;
@@ -1634,9 +1641,9 @@ persistent actor verifier {
         };
         escape := false;
       } else {
-        if (code == 92) { // '\'
+        if (code == 92) { // backslash
           escape := true;
-        } else if (code == 34) { // '"'
+        } else if (code == 34) { // double quote
           let decoded = Text.fromIter(buf.vals());
           return ?{ value = decoded; end = i + 1 };
         } else {
