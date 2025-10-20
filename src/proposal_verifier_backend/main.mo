@@ -762,10 +762,13 @@ persistent actor verifier {
     i;
   };
 
+  let CHAR_DOUBLE_QUOTE : Char = Char.fromNat32(34);
+  let CHAR_BACKSLASH : Char = Char.fromNat32(92);
+
   func consumeJsonStringLiteral(t : Text, start : Nat) : ?Text {
     let arr = Text.toArray(t);
     let n = Array.size(arr);
-    if (start >= n or arr[start] != '"') return null;
+    if (start >= n or arr[start] != CHAR_DOUBLE_QUOTE) return null;
     var i = start + 1;
     var escaped = false;
     while (i < n) {
@@ -773,9 +776,9 @@ persistent actor verifier {
       if (escaped) {
         escaped := false;
       } else {
-        if (ch == '\\') {
+        if (ch == CHAR_BACKSLASH) {
           escaped := true;
-        } else if (ch == '"') {
+        } else if (ch == CHAR_DOUBLE_QUOTE) {
           return ?textSlice(t, start, i + 1);
         };
       };
@@ -799,7 +802,7 @@ persistent actor verifier {
         i += 1;
         i := findNextNonWs(jsonText, i);
         if (i >= n) return null;
-        if (arr[i] == '"') {
+        if (arr[i] == CHAR_DOUBLE_QUOTE) {
           return consumeJsonStringLiteral(jsonText, i);
         } else if (arr[i] == '{') {
           return findBalancedFromBrace(jsonText, i);
