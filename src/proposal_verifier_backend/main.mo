@@ -1597,7 +1597,8 @@ persistent actor verifier {
   func consumeJsonStringLiteral(t : Text, start : Nat) : ?{ value : Text; end : Nat } {
     let chars = Text.toArray(t);
     let n = Array.size(chars);
-    if (start >= n or chars[start] != '"') return null;
+    let doubleQuote = Char.fromNat32(34);
+    if (start >= n or chars[start] != doubleQuote) return null;
 
     let buf = Buffer.Buffer<Char>(0);
     var i = start + 1;
@@ -1607,7 +1608,7 @@ persistent actor verifier {
       let code = Char.toNat32(ch);
       if (escape) {
         switch (code) {
-          case 34 { buf.add('"') };
+          case 34 { buf.add(doubleQuote) };
           case 92 { buf.add('\') };
           case 47 { buf.add('/') };
           case 98 { buf.add(Char.fromNat32(8)) };
@@ -1709,6 +1710,7 @@ persistent actor verifier {
       "\"payloadBytes\"",
       "\"payload\"",
     ];
+    let doubleQuote = Char.fromNat32(34);
     for (marker in markers.vals()) {
       switch (indexOf(jsonText, marker)) {
         case null {};
@@ -1724,7 +1726,7 @@ persistent actor verifier {
                     (); // continue searching other markers
                   } else {
                     let ch = chars[valueStart];
-                    if (ch == '"') {
+                    if (ch == doubleQuote) {
                       switch (consumeJsonStringLiteral(jsonText, valueStart)) {
                         case (?info) {
                           let trimmed = trimWhitespace(info.value);
