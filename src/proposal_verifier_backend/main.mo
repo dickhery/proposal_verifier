@@ -1012,6 +1012,10 @@ persistent actor verifier {
       case ("ParticipantManagement") {
         detectParticipantDocExpectation(lowerSummary, docCount);
       };
+      case ("IcOsVersionDeployment") {
+        // Checksums/downloads are expected; PDFs aren't
+        #optional;
+      };
       case _ {
         if (docCount > 0) {
           #expected;
@@ -1033,14 +1037,43 @@ persistent actor verifier {
 
   // Only call deterministic/text/json providers here
   func isStableDomain(url : Text) : Bool {
-    Text.contains(url, #text "https://ic-api.internetcomputer.org/") or Text.contains(url, #text "https://api.github.com/") or Text.contains(url, #text "https://raw.githubusercontent.com/");
+    let u = Text.toLowercase(url);
+    Text.contains(u, #text "https://ic-api.internetcomputer.org/")
+    or Text.contains(u, #text "https://api.github.com/")
+    or Text.contains(u, #text "https://raw.githubusercontent.com/")
+    // NEW: official release download hosts are static and deterministic
+    or Text.contains(u, #text "https://download.dfinity.systems/")
+    or Text.contains(u, #text "https://download.dfinity.network/");
+    // NOTE: we still treat dashboard html as dynamic (fetched via browser),
+    // but we *parse* its links only if provided from the client or summary.
   };
 
   // -----------------------------
   // URL extraction utilities
   // -----------------------------
+  func unescapeSlashEscapes(t : Text) : Text {
+    if (Text.contains(t, #text "\\/")) {
+      let chars = Text.toArray(t);
+      let n = Array.size(chars);
+      let buf = Buffer.Buffer<Char>(n);
+      var i : Nat = 0;
+      while (i < n) {
+        if (chars[i] == CHAR_BACKSLASH and i + 1 < n and chars[i + 1] == '/') {
+          buf.add('/');
+          i += 2;
+        } else {
+          buf.add(chars[i]);
+          i += 1;
+        };
+      };
+      Text.fromIter(buf.vals());
+    } else {
+      t;
+    };
+  };
+
   func sanitizeUrl(raw : Text) : Text {
-    var s = raw;
+    var s = unescapeSlashEscapes(raw);
 
     func isTrimChar(c : Char) : Bool {
       let n = Char.toNat32(c);
@@ -1108,23 +1141,25 @@ persistent actor verifier {
   };
 
   func extractAllUrls(t : Text) : [Text] {
-    let n = Text.size(t);
+    let normalized = unescapeSlashEscapes(t);
+    let n = Text.size(normalized);
+    let chars = Text.toArray(normalized);
     var i : Nat = 0;
     var acc : [Text] = [];
     func isHttpStart(at : Nat) : Bool {
       let max8 = Nat.min(n, at + 8);
-      let slice8 = textSlice(t, at, max8);
+      let slice8 = textSlice(normalized, at, max8);
       Text.contains(slice8, #text "https://") or Text.contains(slice8, #text "http://");
     };
     while (i < n) {
       if (isHttpStart(i)) {
         var j = i;
         label adv while (j < n) {
-          let ch = Text.toArray(t)[j];
+          let ch = chars[j];
           if (ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t') break adv;
           j += 1;
         };
-        let raw = textSlice(t, i, j);
+        let raw = textSlice(normalized, i, j);
         let clean = sanitizeUrl(raw);
         var exists = false;
         for (u in acc.vals()) { if (u == clean) { exists := true } };
@@ -1132,9 +1167,105 @@ persistent actor verifier {
           acc := Array.append<Text>(acc, [clean]);
         };
         i := j;
-      } else { i += 1 };
+      } else {
+        i += 1;
+      };
     };
     acc;
+  };
+
+  // ---- Helpers to parse checksum content and locate SHA256SUMS links ----
+
+  func parseChecksumSha(text : Text, preferredMarkers : [Text]) : ?Text {
+    // First pass: prefer lines mentioning any preferred marker (e.g., update-img, installation-image)
+    let lines = Iter.toArray(Text.split(text, #char '\n'));
+    label pass1 for (m in preferredMarkers.vals()) {
+      let needle = Text.toLowercase(m);
+      for (ln in lines.vals()) {
+        let low = Text.toLowercase(ln);
+        if (Text.contains(low, #text needle)) {
+          switch (findFirst64Hex(ln)) {
+            case (?h) { return ?h };
+            case null {};
+          };
+        };
+      };
+    };
+    // Fallback: first 64-hex anywhere in the file
+    for (ln in lines.vals()) {
+      switch (findFirst64Hex(ln)) {
+        case (?h) { return ?h };
+        case null {};
+      };
+    };
+    null;
+  };
+
+  func filterChecksumLinks(urls : [Text]) : [Text] {
+    var acc : [Text] = [];
+    for (u in urls.vals()) {
+      let low = Text.toLowercase(u);
+      if ((Text.contains(low, #text "https://download.dfinity.systems/")
+           or Text.contains(low, #text "https://download.dfinity.network/"))
+          and Text.contains(low, #text "sha256sums")) {
+        acc := Array.append<Text>(acc, [u]);
+      };
+    };
+    acc;
+  };
+
+  // Fetch a text resource with the generic transform; returns null on error
+  func fetchText(url : Text) : async ?Text {
+    let req : HttpRequestArgs = {
+      url = url;
+      method = #get;
+      headers = [
+        { name = "User-Agent"; value = "proposal-verifier-canister" },
+        { name = "Accept-Encoding"; value = "identity" },
+      ];
+      body = null;
+      max_response_bytes = ?2_000_000;
+      transform = ?{
+        function = { principal = Principal.fromActor(verifier); method_name = "generalTransform" };
+        context = Blob.fromArray([]);
+      };
+    };
+    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
+    try {
+      let resp = await Management.http_request(req);
+      if (resp.status == 200) {
+        switch (Text.decodeUtf8(resp.body)) {
+          case (?t) { ?t };
+          case null { null };
+        }
+      } else null
+    } catch (e) { null };
+  };
+
+  // Try to derive checksum hash for the given release page HTML:
+  //  1) Extract download.dfinity.* SHA256SUMS links
+  //  2) Fetch each SHA256SUMS and pick a hash (prefer update-img, then installation-image, then any .tar.zst)
+  func extractReleaseChecksumFromHtml(html : Text) : async ?Text {
+    let urls = extractAllUrls(html);
+    let sums = filterChecksumLinks(urls);
+    let prefs : [Text] = ["update-img", "installation-image", ".tar.zst"];
+    for (sumUrl in sums.vals()) {
+      switch (await fetchText(sumUrl)) {
+        case (?txt) {
+          switch (parseChecksumSha(txt, prefs)) {
+            case (?h) { return ?h };
+            case null {};
+          };
+        };
+        case null {};
+      };
+    };
+    null;
+  };
+
+  func tryFetchDashboardReleaseHtml(releaseUrl : Text) : async ?Text {
+    // best-effort; if blocked by boundary policy, this returns null
+    await fetchText(releaseUrl);
   };
 
   func chooseDocUrl(urls : [Text]) : ?Text {
@@ -1711,6 +1842,38 @@ persistent actor verifier {
           };
           case null {};
         };
+
+        // --- NEW: For IcOsVersionDeployment, try release page -> SHA256SUMS ---
+        if (expected == null and base.proposalType == "IcOsVersionDeployment") {
+          // Prefer the release URL we already extracted; else construct from commit if present
+          let releaseUrl : Text = switch (base.extractedDocUrl) {
+            case (?u) { u };
+            case null {
+              switch (base.extractedCommit) {
+                case (?c) { "https://dashboard.internetcomputer.org/release/" # c };
+                case null { "" };
+              };
+            };
+          };
+          if (Text.size(releaseUrl) > 0) {
+            switch (await tryFetchDashboardReleaseHtml(releaseUrl)) {
+              case (?html) {
+                // Parse its download links; then fetch SHA256SUMS and pick a hash
+                switch (await extractReleaseChecksumFromHtml(html)) {
+                  case (?h) {
+                    expected := ?h;
+                    source := ?"download.dfinity.systems SHA256SUMS";
+                  };
+                  case null {};
+                };
+              };
+              case null {};
+            };
+          };
+        };
+
+        // For IcOsVersionDeployment proposals, there is no on-chain arg_hash or wasm hash
+        // Make it explicit for the UI by leaving argHash as-is and letting the client label it "N/A".
 
         // Type-specific helper text
         let steps = getVerificationSteps(base.proposalType);
