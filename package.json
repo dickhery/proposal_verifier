@@ -13,7 +13,8 @@
     "prebuild": "npm run prebuild --workspaces --if-present",
     "pretest": "npm run prebuild --workspaces --if-present",
     "start": "npm start --workspaces --if-present",
-    "test": "npm test --workspaces --if-present"
+    "test": "npm test --workspaces --if-present",
+    "verify:ads": "node scripts/verify-ad-presence.cjs"
   },
   "dependencies": {
     "@dfinity/agent": "^3.3.0",
