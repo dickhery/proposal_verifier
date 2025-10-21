@@ -68,8 +68,22 @@ main {
   text-decoration: none;
   text-align: center;
   white-space: normal;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.2;
 }
 .btn.secondary { background: #f1f1f1; }
+
+button.btn {
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 44px;
+}
+
+.btn:disabled,
+button.btn:disabled {
+  color: rgba(51, 51, 51, 0.6);
+}
 
 /* Support both "button.loading" and ".btn.loading" */
 button.loading,
