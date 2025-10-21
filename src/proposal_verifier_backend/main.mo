@@ -1190,7 +1190,7 @@ persistent actor verifier {
   };
 
   // Fetch a text resource with the generic transform; returns null on error
-  async func fetchText(url : Text) : async ?Text {
+  func fetchText(url : Text) : async ?Text {
     let req : HttpRequestArgs = {
       url = url;
       method = #get;
@@ -1220,7 +1220,7 @@ persistent actor verifier {
   // Try to derive checksum hash for the given release page HTML:
   //  1) Extract download.dfinity.* SHA256SUMS links
   //  2) Fetch each SHA256SUMS and pick a hash (prefer update-img, then installation-image, then any .tar.zst)
-  async func extractReleaseChecksumFromHtml(html : Text) : async ?Text {
+  func extractReleaseChecksumFromHtml(html : Text) : async ?Text {
     let urls = extractAllUrls(html);
     let sums = filterChecksumLinks(urls);
     let prefs : [Text] = ["update-img", "installation-image", ".tar.zst"];
@@ -1238,7 +1238,7 @@ persistent actor verifier {
     null;
   };
 
-  async func tryFetchDashboardReleaseHtml(releaseUrl : Text) : async ?Text {
+  func tryFetchDashboardReleaseHtml(releaseUrl : Text) : async ?Text {
     // best-effort; if blocked by boundary policy, this returns null
     await fetchText(releaseUrl);
   };
