@@ -3050,7 +3050,6 @@ ${linuxVerify}</pre>
           <b>Advisory:</b> This tool surfaces links, hashes, and commands to assist verification.
           Always prefer <b>reproducible builds</b> and compare with on-chain metadata.
         </p>
-        <p><b>Desktop Recommended:</b> This tool may not render properly on mobile devices.</p>
       </section>
 
       <main>
