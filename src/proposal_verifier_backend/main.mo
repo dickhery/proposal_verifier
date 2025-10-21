@@ -197,6 +197,9 @@ persistent actor verifier {
   // Reserving 1B keeps ample headroom while avoiding the previous 5B over-allocation.
   let HTTP_OUTCALL_CYCLES : Nat = 1_000_000_000;
 
+  // Minimum cycles balance required before billing/fetching to avoid failed calls after charging users
+  let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
+
   // Very small, persistent balance map (Principal -> e8s).
   // Simple array-based storage to keep stability trivial.
   var balances : [(Principal, Nat64)] = [];
@@ -1423,6 +1426,14 @@ persistent actor verifier {
         case (#err(_)) {};
       };
       res
+    };
+
+    if (cyclesBefore < MIN_CANISTER_CYCLE_BALANCE) {
+      return finish(#err(
+        "Service temporarily unavailable: backend cycles too low (" #
+        Nat.toText(cyclesBefore) # " < " #
+        Nat.toText(MIN_CANISTER_CYCLE_BALANCE) # "). Please try again after a top-up."
+      ));
     };
 
     if (id == 0) return finish(#err("Proposal id must be greater than zero"));
