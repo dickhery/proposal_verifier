@@ -1,5 +1,5 @@
 // src/proposal_verifier_frontend/src/FAQ.js
-import { html } from 'lit-html';
+import { html, nothing } from 'lit-html';
 import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
 
 export function FAQView({ onBack }) {
@@ -560,11 +560,26 @@ export function FAQView({ onBack }) {
         qa(
           '58) What steps are required to self-host the Proposal Verifier?',
           `
-            1. <b>Clone</b> the repository and install dependencies (<code>npm install</code> for the frontend, <code>mops install</code> for Motoko libs).<br/>
-            2. <b>Customize</b> configuration (beneficiary address, optional branding, guide links).<br/>
-            3. <b>Deploy</b> the canisters via <code>dfx deploy --network ic</code> (or <code>--network local</code> for testing).<br/>
-            4. <b>Update</b> the generated canister IDs inside the frontend `.env` or constants so the UI targets your backend.<br/>
-            5. <b>Fund</b> the backend canister with cycles and test authentication + payment flows before inviting users.
+            <ol>
+              <li>
+                <b>Clone</b> the repository and install dependencies (<code>npm install</code> for the frontend,
+                <code>mops install</code> for Motoko libs).
+              </li>
+              <li>
+                <b>Customize</b> configuration (beneficiary address, optional branding, guide links).
+              </li>
+              <li>
+                <b>Deploy</b> the canisters via <code>dfx deploy --network ic</code> (or
+                <code>--network local</code> for testing).
+              </li>
+              <li>
+                <b>Update</b> the generated canister IDs inside the frontend <code>.env</code> or constants so the UI targets your
+                backend.
+              </li>
+              <li>
+                <b>Fund</b> the backend canister with cycles and test authentication + payment flows before inviting users.
+              </li>
+            </ol>
           `,
           helper('Our deployment checklist modal mirrors these steps and links to the README sections you need most often.')
         ),
@@ -612,13 +627,13 @@ function section(title, content) {
   `;
 }
 
-function qa(question, answerHtml, appHelpHtml) {
+function qa(question, answerHtml, appHelpHtml = helper()) {
   return html`
     <details class="faq">
-      <summary><b>${unsafe(question)}</b></summary>
+      <summary><b>${renderHtml(question)}</b></summary>
       <div class="qa">
-        <p>${unsafe(answerHtml)}</p>
-        <p class="helper"><b>How this app helps:</b> ${unsafe(appHelpHtml)}</p>
+        <p>${renderHtml(answerHtml)}</p>
+        <p class="helper"><b>How this app helps:</b> ${renderHtml(appHelpHtml)}</p>
       </div>
     </details>
   `;
@@ -628,7 +643,9 @@ function helper(extra = 'It reduces copy/paste errors by surfacing links and exp
   return extra;
 }
 
-function unsafe(str) {
-  // We only ever pass our own hard-coded strings here (no user input).
-  return unsafeHTML(str);
+function renderHtml(value) {
+  if (value == null) {
+    return nothing;
+  }
+  return typeof value === 'string' ? unsafeHTML(value) : value;
 }
