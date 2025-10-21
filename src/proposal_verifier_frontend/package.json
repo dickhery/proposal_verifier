@@ -6,10 +6,11 @@
   "scripts": {
     "setup": "npm i && dfx canister create proposal_verifier_backend && dfx generate proposal_verifier_backend && dfx deploy",
     "start": "vite --port 3000",
-    "prebuild": "dfx generate",
+    "prebuild": "node ../../scripts/verify-ad-presence.cjs && dfx generate",
     "build": "tsc && vite build",
     "format": "prettier --write \"src/**/*.{json,js,jsx,ts,tsx,css,scss}\"",
-    "postinstall": "echo 'Frontend dependencies installed successfully'"  
+    "postinstall": "echo 'Frontend dependencies installed successfully'",
+    "verify:ads": "node ../../scripts/verify-ad-presence.cjs"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^5.16.5",
