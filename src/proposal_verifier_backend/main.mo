@@ -1051,8 +1051,29 @@ persistent actor verifier {
   // -----------------------------
   // URL extraction utilities
   // -----------------------------
+  func unescapeSlashEscapes(t : Text) : Text {
+    if (Text.contains(t, #text "\\/")) {
+      let chars = Text.toArray(t);
+      let n = Array.size(chars);
+      let buf = Buffer.Buffer<Char>(n);
+      var i : Nat = 0;
+      while (i < n) {
+        if (chars[i] == CHAR_BACKSLASH and i + 1 < n and chars[i + 1] == '/') {
+          buf.add('/');
+          i += 2;
+        } else {
+          buf.add(chars[i]);
+          i += 1;
+        };
+      };
+      Text.fromIter(buf.vals());
+    } else {
+      t;
+    };
+  };
+
   func sanitizeUrl(raw : Text) : Text {
-    var s = raw;
+    var s = unescapeSlashEscapes(raw);
 
     func isTrimChar(c : Char) : Bool {
       let n = Char.toNat32(c);
@@ -1120,23 +1141,25 @@ persistent actor verifier {
   };
 
   func extractAllUrls(t : Text) : [Text] {
-    let n = Text.size(t);
+    let normalized = unescapeSlashEscapes(t);
+    let n = Text.size(normalized);
+    let chars = Text.toArray(normalized);
     var i : Nat = 0;
     var acc : [Text] = [];
     func isHttpStart(at : Nat) : Bool {
       let max8 = Nat.min(n, at + 8);
-      let slice8 = textSlice(t, at, max8);
+      let slice8 = textSlice(normalized, at, max8);
       Text.contains(slice8, #text "https://") or Text.contains(slice8, #text "http://");
     };
     while (i < n) {
       if (isHttpStart(i)) {
         var j = i;
         label adv while (j < n) {
-          let ch = Text.toArray(t)[j];
+          let ch = chars[j];
           if (ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t') break adv;
           j += 1;
         };
-        let raw = textSlice(t, i, j);
+        let raw = textSlice(normalized, i, j);
         let clean = sanitizeUrl(raw);
         var exists = false;
         for (u in acc.vals()) { if (u == clean) { exists := true } };
@@ -1144,7 +1167,9 @@ persistent actor verifier {
           acc := Array.append<Text>(acc, [clean]);
         };
         i := j;
-      } else { i += 1 };
+      } else {
+        i += 1;
+      };
     };
     acc;
   };
