@@ -1,4 +1,4 @@
-// src/proposal_verifier_frontend/src/FAQ.js
+// src/proposal_verifier_frontend/src/FAQ.js (elaborated)
 import { html, nothing } from 'lit-html';
 import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
 
@@ -20,10 +20,10 @@ export function FAQView({ onBack }) {
           replace it.
         </p>
         <p>
-          The app now includes <b>Internet Identity authentication</b>, <b>built-in payments</b>,
-          and an <b>end-to-end verification guide</b>. Logging in lets the backend attribute fetch
-          costs to your deposit subaccount, while the guide walks you through every manual step so
-          you can confidently verify proposals even outside the UI.
+          The app includes <b>Internet Identity authentication</b>, <b>built-in payments</b>, and an
+          <b>end-to-end verification guide</b>. Logging in lets the backend attribute fetch costs to
+          your deposit subaccount, while the guide walks you through every manual step so you can
+          confidently verify proposals even outside the UI.
         </p>
       </section>
 
@@ -36,6 +36,13 @@ export function FAQView({ onBack }) {
             any linked source (e.g., Git commit) are exactly what the proposer claims. At minimum,
             you: (a) fetch the referenced artifact(s), (b) compute a cryptographic hash
             (typically SHA-256), and (c) compare against the hash in the proposal or official docs.
+            <br/><br/>
+            <b>Deep dive:</b>
+            <ul>
+              <li><b>Artifacts</b> include raw/gzipped Wasm files, IC-OS images, and human documents.</li>
+              <li><b>Trust model</b>: do not assume provenance—prove it by reproducing bytes and hashes.</li>
+              <li><b>Outcome</b>: a short report other community members can reproduce byte-for-byte.</li>
+            </ul>
           `,
           helper()
         ),
@@ -45,6 +52,13 @@ export function FAQView({ onBack }) {
             Decentralization depends on <em>many eyes</em>. Independent verification reduces
             central points of trust and catches accidental or malicious mismatches. It also
             teaches the community how to reproduce builds, increasing transparency and resilience.
+            <br/><br/>
+            <b>Deep dive:</b>
+            <ul>
+              <li><b>Risk reduction</b>: prevents supply-chain slips (wrong commit, wrong binary).</li>
+              <li><b>Accountability</b>: public, reproducible logs make regressions easier to triage.</li>
+              <li><b>Culture</b>: repeated community checks set expectations for publishable evidence.</li>
+            </ul>
           `,
           helper()
         ),
@@ -54,6 +68,13 @@ export function FAQView({ onBack }) {
             When multiple community members independently rebuild/rehash artifacts and reach the
             same result, it forms a distributed attestation that’s hard to subvert. Over time,
             reproducibility and public verification reports become a norm.
+            <br/><br/>
+            <b>Deep dive:</b>
+            <ul>
+              <li><b>Multiple verifiers</b> → less reliance on a single operator or CI pipeline.</li>
+              <li><b>Public artifacts</b>: commit IDs, scripts, and logs allow anyone to audit.</li>
+              <li><b>Long-term memory</b>: reports form a searchable trail around critical upgrades.</li>
+            </ul>
           `,
           helper()
         ),
@@ -63,6 +84,13 @@ export function FAQView({ onBack }) {
             Risks include unverified binaries running in governance-critical places, tampered
             documents, or reference commits that don’t match the artifact. These reduce trust and
             can lead to governance capture or operational regressions.
+            <br/><br/>
+            <b>Deep dive (pitfalls):</b>
+            <ul>
+              <li>Hashing the <em>wrong file</em> (gz vs raw Wasm) and thinking it matches.</li>
+              <li>Not pinning to the exact commit used in the proposal.</li>
+              <li>Skipping argument <code>arg_hash</code> checks for install/upgrade proposals.</li>
+            </ul>
           `,
           helper()
         ),
@@ -73,8 +101,15 @@ export function FAQView({ onBack }) {
           '5) What is a proposal in the NNS (Network Nervous System)?',
           `
             An on-chain request for a governance action (e.g., upgrade a canister, adopt an IC-OS
-            version, add a node provider, etc.). It contains metadata (title, summary, links),
-            a <em>payload</em> (arguments), and often <em>hashes</em> of referenced artifacts.
+            version, add a node provider, etc.). It contains metadata (title, summary, links), a
+            <em>payload</em> (arguments), and often <em>hashes</em> of referenced artifacts.
+            <br/><br/>
+            <b>What to look for:</b>
+            <ul>
+              <li>Proposal <b>ID</b>, <b>type</b>, and <b>status</b>.</li>
+              <li>Payload (text rendering) and any <b>expected hashes</b> mentioned on the page.</li>
+              <li>Forum/wiki links that expand on provenance or build steps.</li>
+            </ul>
           `,
           helper('We fetch the summary, links, payload snippet, and hashes to prefill your checklist.')
         ),
@@ -86,6 +121,13 @@ export function FAQView({ onBack }) {
             <b>Subnet/Node admin</b>, <b>Participant management</b> (e.g., node-provider
             onboarding with PDF hashes), <b>Application canister</b> upgrades, and <b>governance
             motions</b> (text-only intent).
+            <br/><br/>
+            <b>Verification implications:</b>
+            <ul>
+              <li><b>IC-OS</b>: rebuild or verify release image + hash.</li>
+              <li><b>Canisters</b>: rebuild Wasm, compare <code>wasm_hash</code>, check <code>arg_hash</code>.</li>
+              <li><b>Participants</b>/Admin: verify document hashes and identities.</li>
+            </ul>
           `,
           helper('We try to classify from text and surface type-specific tips.')
         ),
@@ -95,16 +137,26 @@ export function FAQView({ onBack }) {
             <b>IC-OS</b> and <b>Protocol Canister</b> upgrades require technical verification
             (repro-build or reproducible hashing). <b>Participant management</b> requires document
             hashing checks. <b>Motion</b> proposals are typically policy statements (manual review).
+            <br/><br/>
+            <b>Rule of thumb:</b> if bytes change on-chain (code or arguments), verify with hashes; if
+            it’s human policy, verify with sources and reasoning.
           `,
           helper()
         ),
         qa(
           '8) What information does a proposal contain (metadata, payload, hashes)?',
           `
-            You’ll usually see a summary/links, payload arguments (often Candid-encoded),
-            and <em>hash fields</em> like <code>expected_hash</code>, <code>wasm_module_hash</code>,
-            or a PDF’s SHA-256 in the summary/docs. The dashboard/API exposes these and links to
-            the forum/wiki for context.
+            You’ll usually see a summary/links, payload arguments (often Candid-encoded), and
+            <em>hash fields</em> like <code>expected_hash</code>, <code>wasm_module_hash</code>, or a
+            PDF’s SHA-256 in the summary/docs. The dashboard/API exposes these and links to the
+            forum/wiki for context.
+            <br/><br/>
+            <b>Checklist:</b>
+            <ul>
+              <li>Capture <b>all hashes</b> shown (raw & gz).</li>
+              <li>Note any <b>commit SHA</b> and repository links.</li>
+              <li>Copy the <b>payload text</b> (or render) for later <code>arg_hash</code> work.</li>
+            </ul>
           `,
           helper('We show a payload snippet (when available) and look for nearby 64-hex hashes and official release URLs.')
         ),
@@ -117,6 +169,13 @@ export function FAQView({ onBack }) {
             It’s the SHA-256 digest of the proposal’s <em>arguments</em> (payload). Matching it
             confirms the payload wasn’t altered. For text/JSON-style args, hash the exact bytes you
             would submit; for Candid, encode first, then hash the bytes.
+            <br/><br/>
+            <b>Practical tips:</b>
+            <ul>
+              <li>If payload is Candid, <b>never</b> hash human-readable pretty output—hash the
+                  <em>encoded bytes</em> from <code>didc encode</code>.</li>
+              <li>Beware whitespace/encoding differences in JSONish inputs; normalize precisely.</li>
+            </ul>
           `,
           helper('Paste args into the app to hash. For Candid, prepare the precise bytes first, then hash.')
         ),
@@ -126,6 +185,12 @@ export function FAQView({ onBack }) {
             <code>wasm_hash</code> fingerprints the code being installed (Wasm module). It differs
             from <code>args_hash</code>, which fingerprints the <em>parameters</em> to that code.
             For upgrades you typically compare both (where applicable).
+            <br/><br/>
+            <b>Notes:</b>
+            <ul>
+              <li>Some proposals specify <b>gzipped</b> Wasm hash; compute for both raw and gz when in doubt.</li>
+              <li>Match exact artifact names/paths from build scripts to avoid hashing the wrong file.</li>
+            </ul>
           `,
           helper('Use the app to re-hash local Wasm files (or confirm expected Wasm hash from the proposal/dashboard).')
         ),
@@ -135,6 +200,13 @@ export function FAQView({ onBack }) {
             The payload is the action’s parameters (Candid). To decode/encode consistently,
             use standard tools (<code>didc</code>, <code>ic-repl</code>) with the exact .did.
             Then hash the <em>bytes</em> of the encoded payload, not the pretty-printed text.
+            <br/><br/>
+            <b>Working recipe:</b>
+            <ol>
+              <li>Get the <code>.did</code> that defines the call.</li>
+              <li>Use <code>didc encode '&lt;args&gt;'</code> to emit bytes.</li>
+              <li>Pipe to <code>shasum -a 256</code> (mac) or <code>sha256sum</code> (Linux).</li>
+            </ol>
           `,
           helper('We display a payload snippet to orient you, but hashing must use the exact bytes you submit on-chain.')
         ),
@@ -144,6 +216,12 @@ export function FAQView({ onBack }) {
             To tie binaries (IC-OS image or Wasm) to a specific source snapshot. You should confirm
             the commit exists upstream and, for IC-OS, run the published verification/build script
             pinned to that commit.
+            <br/><br/>
+            <b>Good hygiene:</b>
+            <ul>
+              <li>Open the precise commit page and read the diff or tag notes.</li>
+              <li>Prefer commands that <b>pin</b> the commit: <code>git checkout &lt;sha&gt;</code>.</li>
+            </ul>
           `,
           helper('We check the commit via GitHub API and link to the precise commit page when detected.')
         ),
@@ -157,6 +235,8 @@ export function FAQView({ onBack }) {
             <b>Canister upgrades</b>: <code>dfx</code>, <code>didc</code>, <code>ic-repl</code> (optional),
             and sometimes <code>docker</code>/<code>podman</code> if you rebuild.<br/>
             <b>IC-OS</b>: Docker/Podman and the IC repo’s pinned <code>repro-check</code> command/script.
+            <br/><br/>
+            <b>Tip:</b> capture tool versions with <code>--version</code> in your report to help others reproduce.
           `,
           helper('The app displays quick shell lines and expected hashes you can copy.')
         ),
@@ -166,6 +246,8 @@ export function FAQView({ onBack }) {
             Use your OS package manager for basics (<code>curl</code>, <code>sha256sum</code>, <code>jq</code>).
             Install <code>dfx</code> from DFINITY docs, and Docker/Podman from their official instructions.
             For <code>didc</code>/<code>ic-repl</code>, see their GitHub releases or cargo installs.
+            <br/><br/>
+            <b>Environment hint:</b> add binaries to PATH and ensure Docker/Podman daemon is running before rebuilds.
           `,
           helper()
         ),
@@ -175,6 +257,8 @@ export function FAQView({ onBack }) {
             <b>WSL</b>: Ubuntu 22.04+ recommended; ensure Docker Desktop integration if using Docker.
             <b>macOS</b>: Docker Desktop/Colima, Homebrew for CLI tools.
             <b>Linux</b>: Ubuntu 22.04+ is the reference for IC-OS verification.
+            <br/><br/>
+            <b>Resource planning:</b> IC-OS workflows may need tens of GBs of disk and &ge;16GB RAM.
           `,
           helper()
         ),
@@ -184,6 +268,13 @@ export function FAQView({ onBack }) {
             Disk space (IC-OS builds are large), memory (16GB+ recommended), proper Docker/Podman
             permissions, and using the <em>commit-pinned</em> repro-script to avoid mismatches with
             evolving build scripts. If a curl script 404s, verify the commit and path.
+            <br/><br/>
+            <b>Quick fixes:</b>
+            <ul>
+              <li>Add your user to the <code>docker</code>/<code>podman</code> group then re-login.</li>
+              <li>Prune containers/images regularly; keep at least 30–50 GB free.</li>
+              <li>Always use the <b>exact</b> repro script from the referenced commit.</li>
+            </ul>
           `,
           helper('We surface the commit and provide curl commands with the pinned commit ID if present.')
         ),
@@ -199,6 +290,12 @@ export function FAQView({ onBack }) {
             (4) Compare to the proposal/dashboard.<br/>
             (5) If necessary, rebuild from source and compare hash.<br/>
             (6) Publish a short, reproducible report.
+            <br/><br/>
+            <b>Extra detail:</b>
+            <ul>
+              <li>Record commands and tool versions as you go.</li>
+              <li>For mismatches, capture both your hash and the expected one for discussion.</li>
+            </ul>
           `,
           helper('The app extracts links/hashes, gives quick hash helpers, and a checklist you can mark off.')
         ),
@@ -207,13 +304,19 @@ export function FAQView({ onBack }) {
           `
             Dashboard: open the proposal page; copy links/hashes. CLI: query governance canister or the public
             dashboard API to retrieve proposal JSON. Your goal is to identify text, payload, and referenced URLs.
+            <br/><br/>
+            <b>CLI sketch:</b> use the public API, then parse <code>payload_text_rendering</code>, <code>wasm_hash</code>,
+            and any URLs for artifacts or commits.
           `,
           helper('Enter a proposal ID; the app pulls key data and links for you.')
         ),
         qa(
           '19) How do I check the <code>args_hash</code> against the arguments provided?',
           `
-            Compute SHA-256 over the exact <em>bytes</em> of the encoded arguments. For JSON-ish payloads, ensure byte-for-byte reproduction (spacing, encoding). For Candid, encode with the correct .did first, then hash.
+            Compute SHA-256 over the exact <em>bytes</em> of the encoded arguments. For JSON-ish payloads, ensure byte-for-byte
+            reproduction (spacing, encoding). For Candid, encode with the correct .did first, then hash.
+            <br/><br/>
+            <b>Example (macOS):</b> <code>didc encode '(opt principal "aaaaa-aa")' | shasum -a 256</code>
           `,
           helper('Paste arguments text for quick hashing; for Candid, hash the encoded bytes you provide on-chain.')
         ),
@@ -222,6 +325,8 @@ export function FAQView({ onBack }) {
           `
             Clone the repo at the referenced commit; follow the README/build instructions to produce the Wasm.
             Then run <code>sha256sum</code> on the produced file and compare with the proposal’s <code>wasm_hash</code>.
+            <br/><br/>
+            <b>Tip:</b> some projects publish both raw and gzipped Wasm; compute both if the proposal mentions “(gz) SHA-256”.
           `,
           helper('We show an artifact path hint (when present) and a type-specific rebuild guide block.')
         ),
@@ -230,6 +335,8 @@ export function FAQView({ onBack }) {
           `
             IC-OS: use the commit-pinned <code>repro-check</code> command from the IC repo, or the commands posted
             in the proposal summary. Compare the resulting image’s hash. Protocol canisters: rebuild Wasm or verify the published hash and provenance.
+            <br/><br/>
+            <b>Sanity check:</b> ensure the release package filename and hash you compute match what the page claims.
           `,
           helper('We show release URLs and a command block to copy, including expected hash comparison.')
         ),
@@ -237,6 +344,12 @@ export function FAQView({ onBack }) {
           '22) How do I verify Node Provider Rewards / Participant Management proposals?',
           `
             Download the exact documents (self-declaration, identity proofs) from the wiki/forum link. Compute SHA-256 of each file and confirm each hash matches the proposal’s listed values. Sanity-check identity and context.
+            <br/><br/>
+            <b>Extra checks:</b>
+            <ul>
+              <li>Verify <b>principal IDs</b>, <b>account identifiers</b>, and dates/periods referenced.</li>
+              <li>Spot-check PDFs for obvious edits (file size/date) and hash the <b>exact</b> bytes downloaded.</li>
+            </ul>
           `,
           helper('Per-doc upload fields let you hash locally and visually confirm each match.')
         ),
@@ -245,6 +358,8 @@ export function FAQView({ onBack }) {
           `
             IC-OS focuses on reproducible build of the update image; canister upgrades on Wasm hashing/rebuild;
             participant management on document hash checks; motions on human reasoning and references.
+            <br/><br/>
+            <b>Memory aid:</b> <em>OS → image</em>, <em>Canister → Wasm + args</em>, <em>Admin → docs</em>, <em>Motion → sources</em>.
           `,
           helper()
         ),
@@ -256,6 +371,8 @@ export function FAQView({ onBack }) {
           `
             Look for GitHub links in the summary (often to <code>dfinity/ic</code> or relevant repo) and a commit SHA.
             If absent, check the forum post linked from the proposal for the commit reference.
+            <br/><br/>
+            <b>Tip:</b> prefer <em>commit links</em> over branches/tags to avoid drift during verification.
           `,
           helper('We extract repo/commit from the summary and link the commit page when available.')
         ),
@@ -263,6 +380,8 @@ export function FAQView({ onBack }) {
           '25) How do I check out the correct Git commit for rebuilding?',
           `
             <code>git clone</code>, <code>git checkout &lt;commit&gt;</code>. Always use the <em>exact</em> commit hash from the proposal text or official post to avoid drift.
+            <br/><br/>
+            <b>Sanity check:</b> run <code>git rev-parse HEAD</code> and paste it in your report.
           `,
           helper('We show the detected commit and link it, plus an IC-OS rebuild snippet pinned to that commit (when applicable).')
         ),
@@ -271,6 +390,8 @@ export function FAQView({ onBack }) {
           `
             Use the GitHub REST API or the web UI to confirm the commit exists on the upstream and review the diff.
             Optionally, check maintainer signatures/tags for authenticity in sensitive repos.
+            <br/><br/>
+            <b>Extra step:</b> compare the tree for release tags with the commit referenced by the proposal.
           `,
           helper('We call <code>GET /repos/{owner}/{repo}/commits/{ref}</code> and show an explicit “Commit exists” indicator.')
         ),
@@ -279,6 +400,8 @@ export function FAQView({ onBack }) {
           `
             A verified signature demonstrates the author controls certain keys/identity. While not always used,
             it increases confidence. For releases, signed tags or reproducible builds are common assurance methods.
+            <br/><br/>
+            <b>Note:</b> signed tags help, but reproducible <em>artifacts</em> are the ultimate check.
           `,
           helper()
         ),
@@ -287,6 +410,8 @@ export function FAQView({ onBack }) {
           `
             Rebuild deterministically from the commit and compare the output’s SHA-256 to the proposal/on-chain hash.
             For IC-OS, follow the IC repo’s pinned script; for canisters, follow the repo’s build instructions.
+            <br/><br/>
+            <b>Compare both</b> raw and gzipped Wasm if both are published.
           `,
           helper()
         ),
@@ -298,6 +423,8 @@ export function FAQView({ onBack }) {
           `
             If independent builders on clean machines—following the same steps—produce bit-identical artifacts
             (same hash). This is the gold standard for trust-minimized upgrades.
+            <br/><br/>
+            <b>Practices:</b> pin toolchain versions, use containers/VMs, and avoid network-dependent steps.
           `,
           helper()
         ),
@@ -306,6 +433,8 @@ export function FAQView({ onBack }) {
           `
             Containerized environments control toolchain and dependencies, reducing differences across machines and
             improving the chance of byte-identical outputs from the same commit.
+            <br/><br/>
+            <b>Tip:</b> prefer Podman/Docker <em>build scripts pinned to commits</em> over manually assembling envs.
           `,
           helper()
         ),
@@ -314,121 +443,147 @@ export function FAQView({ onBack }) {
           `
             Run <code>sha256sum</code> on your local output (or <code>shasum -a 256</code> on macOS) and compare to
             the hash shown in the dashboard/proposal summary.
+            <br/><br/>
+            <b>Check both:</b> <code>*.wasm</code> and, if present, <code>*.wasm.gz</code>.
           `,
           helper('We surface the expected hash and show where it was found (dashboard/API/summary).')
         ),
         qa(
-          '32) How do I verify IC-OS binaries against source code and published hashes?',
+          '32) What if my local hash doesn’t match the expected <code>wasm_hash</code>?',
           `
-            Use the IC repo’s repro-check command pinned to the proposal’s commit. It downloads/builds the right bits
-            and prints the image’s hash to compare with the proposal’s expected value.
+            First, ensure you hashed the correct file (raw vs gz). Then confirm you built from the <b>exact</b> commit, with the
+            proper tool versions. If still diverging, compare build logs, dependencies, and environment.
+            <br/><br/>
+            <b>Report both</b> your hash and the expected hash to help others diagnose.
           `,
-          helper('We auto-display “Release Package Commands” if we detect official release links in the payload.')
+          helper('The app shows which hash (raw/gz) it expects so you can align your calculation.')
         ),
         qa(
-          '33) What should I do if the binary hash does not match the on-chain proposal?',
+          '33) Do I need to hash the raw Wasm or the gzipped Wasm (or both)?',
           `
-            Double-check your environment (OS, RAM, disk space, container engine), the exact commit, and the exact
-            script/flags used. If the mismatch persists, share logs and steps publicly; it might reveal an error in
-            either your process or the proposal materials.
-          `,
-          helper('We can’t fix a mismatch, but the app helps you gather URLs/hashes and produce a clean, copyable report.')
-        ),
-      ])}
-
-      ${section('8. Hashing & Integrity', [
-        qa(
-          '34) How do I compute a hash (sha256sum, shasum, etc.) for wasm or args?',
-          `
-            Examples: <code>sha256sum file.wasm</code> (Linux), <code>shasum -a 256 file.wasm</code> (macOS).
-            For arguments, hash the <em>exact bytes</em> to be submitted (Candid-encoded or raw JSON).
-          `,
-          helper('Upload or paste content to compute SHA-256 in the browser (WebCrypto) for quick checks.')
-        ),
-        qa(
-          '35) How do I confirm I am hashing the correct file and not a modified version?',
-          `
-            Always obtain artifacts from the canonical URL (wiki, GitHub release, DFINITY “download” host, etc.),
-            and avoid re-saving or re-encoding. Keep a clean workspace and record exact commands/URLs.
-          `,
-          helper()
-        ),
-        qa(
-          '36) Why is SHA-256 used as the hashing algorithm for ICP proposals?',
-          `
-            SHA-256 is widely supported, collision-resistant for practical purposes, and standardized across tools.
-            It’s a pragmatic, secure default for integrity checks.
-          `,
-          helper()
-        ),
-        qa(
-          '37) How do I hash Candid arguments for comparison with <code>args_hash</code>?',
-          `
-            Encode arguments to their binary Candid representation with the correct .did and <em>then</em> hash those bytes.
-            Pretty-printed Candid text is not the same as the submitted bytes.
+            Follow the proposal text/Dashboard. Some specify <b>Proposed WASM (gz) SHA-256</b>. In doubt, compute <em>both</em> and
+            report them side by side.
+            <br/><br/>
+            <b>Rule</b>: never assume gz == raw; they are different bytes and will never match.
           `,
           helper()
         ),
       ])}
 
-      ${section('9. Troubleshooting', [
+      ${section('8. Hashes & Arguments', [
         qa(
-          '38) What should I do if my hash does not match the proposal’s <code>args_hash</code>?',
+          '34) How do I compute the SHA-256 of a file?',
           `
-            Confirm you used the exact byte encoding (Candid vs JSON), identical field ordering and whitespace (if JSON),
-            and the correct input file. Try re-fetching the artifact and diffing bytes.
+            <code>sha256sum &lt;file&gt;</code> on Linux, <code>shasum -a 256 &lt;file&gt;</code> on macOS/WSL. Ensure you hash the
+            <em>exact</em> artifact referenced (e.g., raw or gzipped Wasm, the IC-OS image, or a PDF).
+            <br/><br/>
+            <b>Extra:</b> print file size (<code>stat</code>) in your report to help sanity-check which bytes you hashed.
           `,
           helper()
         ),
         qa(
-          '39) What should I do if my wasm build does not match the on-chain <code>wasm_hash</code>?',
+          '35) How do I compute the <code>args_hash</code> for a payload?',
           `
-            Clean and rebuild in the recommended environment (often Ubuntu 22.04+). Ensure toolchain versions match,
-            use the pinned scripts, and rebuild from the exact commit. Share a minimal log if mismatch persists.
+            Encode the payload to bytes (Candid via <code>didc encode</code>), then pipe the bytes to SHA-256. For text/JSON style,
+            confirm byte-for-byte reproduction.
+            <br/><br/>
+            <b>Example:</b> <code>didc encode '(record { controller = principal "aaaaa-aa" })' | sha256sum</code>
           `,
           helper()
         ),
         qa(
-          '40) How do I resolve issues unique to WSL, Linux, or macOS?',
+          '36) What if a proposal’s arguments are empty or null?',
           `
-            WSL: enable Docker integration and sufficient memory/disk. Linux: confirm user is in <code>docker</code>
-            group or use rootless podman. macOS: sometimes prefer Colima; use <code>shasum -a 256</code>.
+            It may be a <em>reinstall</em> or a call that takes no parameters. Represent “empty” exactly as the canister expects (e.g.,
+            <code>()</code> for no args). The <code>arg_hash</code> should then match the hash of the correctly encoded empty value.
+            <br/><br/>
+            <b>Pitfall:</b> hashing the literal word “null” or an empty string instead of the encoded empty Candid value.
           `,
           helper()
         ),
         qa(
-          '41) When should I conclude that the mismatch might be in the proposal itself?',
+          '37) My computed <code>args_hash</code> doesn’t match—what now?',
           `
-            When independent verifiers, using the official commit/script, all get the same different hash. Escalate
-            with a public write-up so the proposer can correct the record or explain the difference.
+            Double-check the .did and the exact textual form you encoded, including spacing and quoting. Ensure you’re hashing the
+            <em>encoded bytes</em>, not a pretty printer’s output. Compare your pipeline with other verifiers.
+            <br/><br/>
+            <b>Trick:</b> write the bytes to a file and hash that file to avoid shell quoting mistakes.
+          `,
+          helper('The app’s hash helper reduces copy/paste errors by letting you paste args and see the digest live.')
+        ),
+      ])}
+
+      ${section('9. Documents & Evidence', [
+        qa(
+          '38) How do I verify PDF or text documents linked in a proposal?',
+          `
+            Download the exact files from official links and compute SHA-256. Compare to the values listed in the proposal text or
+            attachments. Do a quick visual scan for date/author consistency.
+            <br/><br/>
+            <b>Extra:</b> keep the originals as evidence; include filename + size + hash in your report.
+          `,
+          helper()
+        ),
+        qa(
+          '39) What if the provided document hash doesn’t match what I downloaded?',
+          `
+            Re-download (no viewer), ensure the URL isn’t behind a converter, and confirm you didn’t hash a rendered version. If it still
+            mismatches, raise it in the forum thread with both hashes and the exact URL used.
+            <br/><br/>
+            <b>Often</b> it’s a different PDF revision or an encoding/transfer quirk.
+          `,
+          helper()
+        ),
+        qa(
+          '40) How should I reference sources and links in my report?',
+          `
+            Link to the proposal page, commit, release artifacts, and any forum posts. Use permalinks (commit SHAs, release tags) so future
+            readers land on the exact versions you used.
+            <br/><br/>
+            <b>Tip:</b> paste short command blocks and hashes inline for scanability.
+          `,
+          helper()
+        ),
+        qa(
+          '41) How do I compare two versions of a document (e.g., node-provider declaration)?',
+          `
+            Compute and compare each file’s SHA-256. For content differences, use <code>diff</code> or a PDF text extractor to compare
+            semantic changes.
+            <br/><br/>
+            <b>Note:</b> prefer hashing the original binary bytes rather than extracted text when verifying integrity.
           `,
           helper()
         ),
       ])}
 
-      ${section('10. Automation & Reporting', [
+      ${section('10. Reports, Community & Sharing', [
         qa(
-          '42) Can proposal verification be automated with scripts or tooling?',
+          '42) What is the recommended flow for collaborating on verification (forums, GitHub)?',
           `
-            Yes—scripts can fetch proposals, extract URLs/hashes, run <code>sha256sum</code>, and store results.
-            For IC-OS, orchestration can invoke the pinned repro command automatically.
-          `,
-          helper('Our app’s output and commands are easily copyable for your scripts; you can also print the checklist result.')
-        ),
-        qa(
-          '43) What existing tools or dashboards help automate verification?',
-          `
-            The ICP Dashboard exposes proposal pages and JSON APIs; GitHub APIs help verify commits; the IC repo
-            provides repro-scripts for IC-OS. Community dashboards sometimes summarize weekly releases and hashes.
+            Post early notes on the forum thread; share your environment and initial hashes so others can replicate quickly. Use a GitHub gist
+            or repo for longer transcripts/logs.
+            <br/><br/>
+            <b>Etiquette:</b> separate facts (commands, hashes) from opinions (risk/impact) to keep threads productive.
           `,
           helper()
         ),
         qa(
-          '44) How can I write a simple script to check <code>args_hash</code> and <code>wasm_hash</code>?',
+          '43) How do I cross-check my results with others and converge on consensus?',
           `
-            Use <code>curl</code> to fetch proposal JSON; parse out expected hashes (with <code>jq</code>), download the
-            referenced file(s), compute <code>sha256sum</code>, and diff values. For Candid args, use <code>didc</code>
-            to encode first, then hash.
+            Compare commit, environment (OS, tool versions), exact commands, and output hashes. If one person diverges, try to reproduce their
+            steps in a clean environment.
+            <br/><br/>
+            <b>Converge via</b> small deltas—change one variable at a time.
+          `,
+          helper()
+        ),
+        qa(
+          '44) How do I write a clear summary for voters (TL;DR)?',
+          `
+            State the proposal ID, what was verified (source, wasm, args, documents), the computed hashes, and whether they match. Add any
+            notable caveats. Keep it under ~10 lines and link to full logs.
+            <br/><br/>
+            <b>For Candid args</b>, include the exact literal form you used for encoding.
           `,
           helper()
         ),
@@ -437,6 +592,8 @@ export function FAQView({ onBack }) {
           `
             Include: proposal ID, links, commit, commands used (with versions), exact hashes observed, and a short
             checklist result. Keep it concise and copy-pastable.
+            <br/><br/>
+            <b>Template:</b> “Env”, “Sources”, “Commands”, “Hashes (raw/gz)”, “Args”, “Conclusion”.
           `,
           helper('Use the app’s “Relevant Links”, “Release Commands”, and “Checklist” sections as a starter for your report.')
         ),
@@ -445,6 +602,8 @@ export function FAQView({ onBack }) {
           `
             Post on the DFINITY forum thread for the proposal, GitHub gists/repos, and governance community channels.
             The goal is discoverability and reproducibility.
+            <br/><br/>
+            <b>Tip:</b> add searchable terms (proposal ID, commit SHA) so others find your write-up later.
           `,
           helper()
         ),
@@ -456,6 +615,8 @@ export function FAQView({ onBack }) {
           `
             Prefer official hosts: GitHub (correct org/repo/commit), DFINITY download endpoints, the IC wiki,
             and the links embedded in the proposal summary/dashboard. Beware shortened or third-party mirrors.
+            <br/><br/>
+            <b>Good practice:</b> verify TLS (https), check checksums, and favor commits/releases over branches.
           `,
           helper()
         ),
@@ -464,6 +625,8 @@ export function FAQView({ onBack }) {
           `
             Use containers or VMs, restrict privileges, and dedicate a clean workspace. Capture a log of commands
             and output for traceability.
+            <br/><br/>
+            <b>Extra</b>: snapshot your VM before long rebuilds so you can roll back and compare.
           `,
           helper()
         ),
@@ -472,6 +635,8 @@ export function FAQView({ onBack }) {
           `
             Binaries can be swapped or corrupted in transit. Hashes and reproducible builds provide integrity and
             provenance guarantees that simple downloads do not.
+            <br/><br/>
+            <b>Remember</b>: “downloaded” ≠ “verified”.
           `,
           helper()
         ),
@@ -480,6 +645,8 @@ export function FAQView({ onBack }) {
           `
             Match the download URL, commit, and hash against the proposal text, IC Dashboard, forum announcement,
             and repository README. They should all agree on commit and expected hash.
+            <br/><br/>
+            <b>Mismatch?</b> Pause, collect evidence (links + hashes), and discuss before voting.
           `,
           helper()
         ),
@@ -488,6 +655,8 @@ export function FAQView({ onBack }) {
           `
             Publish minimal, reproducible logs and hashes; link to the exact commit; pin commands to specific versions;
             and collaborate on public threads to converge on shared, verifiable results.
+            <br/><br/>
+            <b>Norm</b>: keep verification artifacts available long-term (gists/repos).
           `,
           helper()
         ),
@@ -498,19 +667,20 @@ export function FAQView({ onBack }) {
           '52) How does authentication work in the Proposal Verifier app?',
           `
             The frontend integrates <b>Internet Identity</b> authentication. When you click “Login with Internet Identity”,
-            you authenticate once through an II anchor and the backend issues a session for your browser tab. The login is
-            required for any action that burns backend cycles (proposal fetches, GitHub checks, ledger transfers) so the app
-            can attribute usage to your deposit subaccount instead of a shared anonymous pool.
+            you authenticate once through an II window and the session is remembered. After authenticating, paid actions
+            (e.g., fetching proposals and related outcalls) can be attributed to <em>your</em> principal.
+            <br/><br/>
+            <b>Note:</b> logging out simply clears the session; you can log back in with the same II to resume.
           `,
-          helper('The login button sits at the top-right of the verifier view; once authenticated, the UI shows your principal and balance.')
+          helper('The status pill in the navigation shows whether you are authenticated and able to trigger fetches.')
         ),
         qa(
-          '53) Do I need to stay signed in to use every feature?',
+          '53) What happens if I log out or my session expires?',
           `
-            Browsing existing proposal data in your current session is possible without re-authenticating, but any network call
-            that hits the governance canister, HTTPS outcalls, or the ledger must confirm your identity. Staying signed in keeps
-            the WebAuthn delegation cached so the backend can authorize your requests and debit fees accurately. If you log out,
-            simply click “Login with Internet Identity” again to resume paid actions.
+            If you log out or your session expires, paid actions are disabled until you authenticate again. Your deposit
+            subaccount and balance are unchanged. Just click “Login with Internet Identity” to continue.
+            <br/><br/>
+            <b>Heads-up:</b> background tabs may expire silently—refresh if a fetch button appears disabled.
           `,
           helper('The status pill in the navigation shows whether you are authenticated and able to trigger fetches.')
         ),
@@ -522,6 +692,8 @@ export function FAQView({ onBack }) {
             and only then settles the transaction to the configured beneficiary. You can top up the subaccount from any wallet by
             sending ICP to the address displayed in the “Deposit” dialog. Deposits happen on the legacy ICP ledger so funds show
             up within a few blocks.
+            <br/><br/>
+            <b>Transparency:</b> the payments drawer shows your principal, subaccount, recent debits, and beneficiary preview.
           `,
           helper('The balance widget lists your subaccount, provides copy buttons, and links to the ledger explorer so you can track receipts.')
         ),
@@ -532,6 +704,8 @@ export function FAQView({ onBack }) {
             and a “Deposit” CTA with a QR code + raw hex address. Use any NNS wallet, hardware wallet, or ledger CLI to send ICP
             to that subaccount. After topping up, refresh balances via the UI button; the backend queries the ledger and updates
             your available funds instantly.
+            <br/><br/>
+            <b>Tip:</b> copy the account identifier directly from the UI to avoid transcription mistakes.
           `,
           helper('The drawer also exposes a one-click “Copy account identifier” control to avoid transcription mistakes.')
         ),
@@ -542,6 +716,8 @@ export function FAQView({ onBack }) {
             ICP from your deposit subaccount to a configured beneficiary account so the operator can convert it into cycles and
             keep the service online. When self-hosting you should replace the default address with one you control to capture
             those fees and fund your own deployment (details below).
+            <br/><br/>
+            <b>Self-hosters:</b> change the beneficiary constant before deploying so fees flow to your account.
           `,
           helper('We display the beneficiary preview inside the payments drawer so you always know where funds go.')
         ),
@@ -554,6 +730,8 @@ export function FAQView({ onBack }) {
             Yes. The entire project is open source at <a href="https://github.com/dickhery/proposal_verifier" target="_blank" rel="noreferrer">github.com/dickhery/proposal_verifier</a>.
             Clone the repository, review the README for prerequisites (dfx, node, vessel/mops), and you can deploy identical frontend
             and backend canisters on your own Internet Computer account.
+            <br/><br/>
+            <b>Tip:</b> read <code>GUIDE.md</code> sections on local usage for end-to-end steps.
           `,
           helper('The app links to the repository from the footer so you can jump directly to the codebase.')
         ),
@@ -580,6 +758,8 @@ export function FAQView({ onBack }) {
                 <b>Fund</b> the backend canister with cycles and test authentication + payment flows before inviting users.
               </li>
             </ol>
+            <br/>
+            <b>Verification:</b> ensure the payments drawer shows <em>your</em> beneficiary address before production use.
           `,
           helper('Our deployment checklist modal mirrors these steps and links to the README sections you need most often.')
         ),
@@ -590,6 +770,8 @@ export function FAQView({ onBack }) {
             Before deploying your own instance, replace it with a 64-hex account identifier you control (for example, the subaccount
             from your NNS wallet). Update the constant in <code>src/proposal_verifier_backend/main.mo</code>, redeploy the backend, and
             confirm the payments drawer displays your address before onboarding users.
+            <br/><br/>
+            <b>Sanity:</b> paste the new address into a ledger explorer to confirm format/ownership.
           `,
           helper('The UI surfaces the active beneficiary so you can verify your customization worked.')
         ),
@@ -600,6 +782,8 @@ export function FAQView({ onBack }) {
             It expands on every checklist item, shows shell transcripts for IC-OS rebuilds, explains payment wiring, and includes
             troubleshooting matrices for common mismatches. Keep it open alongside the app whenever you want extra context or
             need to double-check a manual step.
+            <br/><br/>
+            <b>Shortcut:</b> contextual “Learn more” links jump straight to the relevant section.
           `,
           helper('Contextual “Learn more” links in the UI jump straight into the relevant GUIDE.md section.')
         ),
@@ -610,6 +794,8 @@ export function FAQView({ onBack }) {
             and that the II origin is authorized. Next, inspect backend logs (<code>dfx canister log</code>) for ledger transfer errors or
             missing cycles. Verify that your customized beneficiary address is a valid account identifier (64 hex chars) and that
             the ledger fees are funded. Finally, re-run <code>dfx deploy</code> after any code changes to pick up new constants.
+            <br/><br/>
+            <b>Also verify:</b> CORS settings for HTTPS outcalls and that your node can reach GitHub/ledger endpoints.
           `,
           helper('The deployment checklist highlights missing env vars and warns if ledger transfers fail so you can react quickly.')
         ),
@@ -649,3 +835,4 @@ function renderHtml(value) {
   }
   return typeof value === 'string' ? unsafeHTML(value) : value;
 }
+
