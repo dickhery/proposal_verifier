@@ -15,24 +15,6 @@
 
   * [A. Manual verification (no app)](#a-manual-verification-no-app)
   * [B. With the Proposal Verifier app](#b-with-the-proposal-verifier-app)
-  
-# Internet Computer Proposal Verification Guide (Manual & With the Proposal Verifier App)
-
-> A practical, beginner-friendly handbook to verify NNS proposals step-by-step, rebuild binaries, check argument hashes, and publish your results. It also shows how to use the **Proposal Verifier** app and how to verify **manually in parallel**.
-
----
-
-## Table of Contents
-
-* [1. What is a proposal & why verification matters](#1-what-is-a-proposal--why-verification-matters)
-* [2. Where proposals live (NNS, Dashboard & API)](#2-where-proposals-live-nns-dashboard--api)
-* [3. Proposal types & what to verify for each](#3-proposal-types--what-to-verify-for-each)
-* [4. Core concepts in plain English](#4-core-concepts-in-plain-english)
-* [5. Setup & dependencies (Windows/macOS/Linux)](#5-setup--dependencies-windowsmacoslinux)
-* [6. Two workflows at a glance (diagrams)](#6-two-workflows-at-a-glance-diagrams)
-
-  * [A. Manual verification (no app)](#a-manual-verification-no-app)
-  * [B. With the Proposal Verifier app](#b-with-the-proposal-verifier-app)
 * [7. Full step-by-step (manual method)](#7-full-step-by-step-manual-method)
 * [8. Full step-by-step (Proposal Verifier app)](#8-full-step-by-step-proposal-verifier-app)
 * [9. Rebuilding & hashing binaries (IC canisters & IC-OS)](#9-rebuilding--hashing-binaries-ic-canisters--ic-os)
