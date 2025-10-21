@@ -2152,7 +2152,7 @@ ${linuxVerify}</pre>
   #renderArgTypeHelp() {
     const common = html`<p>
       Switch the selector above to match the format of the data you currently have. The helpers
-      below explain what to paste for each option and how to get to the canonical bytes that the NNS
+      above explain what to paste for each option and how to get to the canonical bytes that the NNS
       hashed on-chain.
     </p>`;
 

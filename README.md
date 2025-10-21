@@ -1,9 +1,8 @@
 # IC Proposal Verifier
 
-[![IC Proposal Verifier](https://img.shields.io/badge/ICP-Proposal%20Verifier-blue?style=flat-square)](https://dashboard.internetcomputer.org/)
-[![GitHub license](https://img.shields.io/github/license/dfinity/ic?style=flat-square)](https://github.com/dfinity/ic/blob/main/LICENSE)
-[![GitHub issues](https://img.shields.io/github/issues/dfinity/ic?style=flat-square)](https://github.com/dfinity/ic/issues)
-[![GitHub stars](https://img.shields.io/github/stars/dfinity/ic?style=flat-square)](https://github.com/dfinity/ic/stargazers)
+[![IC Proposal Verifier](https://img.shields.io/badge/ICP-Proposal%20Verifier-blue?style=flat-square)](https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/)
+[![GitHub license](https://img.shields.io/github/license/dfinity/ic?style=flat-square)](https://github.com/dickhery/proposal_verifier/blob/main/LICENSE)
+
 
 ## Table of Contents
 

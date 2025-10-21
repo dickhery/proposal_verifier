@@ -1,0 +1,15 @@
+ICP Proposal Verifier — NOTICE
+
+This project is licensed under the ICP Proposal Verifier License, v1.0 (Ad-Retention).
+When Deploying the UI, you must include a functioning ad embed. The current canonical Ad Script is:
+
+  https://cdn.jsdelivr.net/gh/dickhery/Ad-Network-Embed@3c07f3bd238b8d7fd516a95ba26cb568ba0e7b3f/ad-network-embed-bundled.js
+
+Default attributes used by this repository:
+  data-project-id="Proposal Verifier"
+  data-ad-type="Horizontal Banner Portrait"
+
+Successor or functionally equivalent scripts may be substituted for security, availability,
+or versioning, provided ads remain materially visible to end users.
+
+Copyright (c) 2025 The ICP Proposal Verifier authors.
