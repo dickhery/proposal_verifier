@@ -1,4 +1,14 @@
 /* src/proposal_verifier_frontend/src/index.scss */
+html {
+  box-sizing: border-box;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
 :root {
   --bg: #f4f4f4;
   --panel: #fff;
@@ -6,34 +16,74 @@
   --muted: #eee;
   --border: #ddd;
   --accent: #0a58ca;
+  --content-max-width: 1120px;
 }
 
 body {
+  margin: 0;
   font-family: sans-serif;
-  font-size: 1.2rem;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text);
   background: var(--bg);
-  padding: 20px;
+  padding: 16px;
+}
+
+#root {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
 }
 
 h1, h2 { color: var(--text); }
 
 .topbar {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
 }
-.topbar .grow { flex: 1; }
+.topbar .grow {
+  flex: 1;
+  width: 100%;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 
 .btn {
-  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
   font-size: 1rem;
   border: 1px solid #888;
   background: #fff;
   border-radius: 6px;
   cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+  white-space: normal;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.2;
 }
 .btn.secondary { background: #f1f1f1; }
+
+button.btn {
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 44px;
+}
+
+.btn:disabled,
+button.btn:disabled {
+  color: rgba(51, 51, 51, 0.6);
+}
 
 /* Support both "button.loading" and ".btn.loading" */
 button.loading,
@@ -52,13 +102,77 @@ button.linklike {
 
 form {
   display: flex;
+  flex-direction: column;
   gap: 10px;
   margin-bottom: 20px;
-  align-items: center;
+  align-items: stretch;
 }
 
-input, button, textarea { padding: 8px; font-size: 1rem; }
+form label {
+  font-weight: 600;
+}
+
+form > * {
+  width: 100%;
+}
+
+form .btn {
+  width: 100%;
+}
+
+input,
+button,
+textarea {
+  padding: 10px;
+  font-size: 1rem;
+}
 textarea { width: 100%; height: 100px; resize: vertical; }
+
+@media (min-width: 640px) {
+  body {
+    font-size: 1.05rem;
+    padding: 20px;
+  }
+
+  .topbar {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .topbar .grow {
+    width: auto;
+  }
+
+  form {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+  }
+
+  form label {
+    width: auto;
+    margin-bottom: 0;
+  }
+
+  form > * {
+    width: auto;
+  }
+
+  form input {
+    min-width: 160px;
+  }
+
+  form .btn {
+    width: auto;
+  }
+}
+
+@media (min-width: 960px) {
+  body {
+    font-size: 1.1rem;
+  }
+}
 
 section {
   background: var(--panel);
