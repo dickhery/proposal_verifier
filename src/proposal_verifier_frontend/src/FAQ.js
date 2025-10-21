@@ -1,5 +1,5 @@
 // src/proposal_verifier_frontend/src/FAQ.js
-import { html } from 'lit-html';
+import { html, nothing } from 'lit-html';
 import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
 
 export function FAQView({ onBack }) {
@@ -18,6 +18,12 @@ export function FAQView({ onBack }) {
           reproducible builds, and careful reading of sources) remains the most reliable way to
           ensure proposal integrity. Use this app to accelerate and document your work—not to
           replace it.
+        </p>
+        <p>
+          The app now includes <b>Internet Identity authentication</b>, <b>built-in payments</b>,
+          and an <b>end-to-end verification guide</b>. Logging in lets the backend attribute fetch
+          costs to your deposit subaccount, while the guide walks you through every manual step so
+          you can confidently verify proposals even outside the UI.
         </p>
       </section>
 
@@ -486,6 +492,128 @@ export function FAQView({ onBack }) {
           helper()
         ),
       ])}
+
+      ${section('12. Accounts, Authentication & Payments', [
+        qa(
+          '52) How does authentication work in the Proposal Verifier app?',
+          `
+            The frontend integrates <b>Internet Identity</b> authentication. When you click “Login with Internet Identity”,
+            you authenticate once through an II anchor and the backend issues a session for your browser tab. The login is
+            required for any action that burns backend cycles (proposal fetches, GitHub checks, ledger transfers) so the app
+            can attribute usage to your deposit subaccount instead of a shared anonymous pool.
+          `,
+          helper('The login button sits at the top-right of the verifier view; once authenticated, the UI shows your principal and balance.')
+        ),
+        qa(
+          '53) Do I need to stay signed in to use every feature?',
+          `
+            Browsing existing proposal data in your current session is possible without re-authenticating, but any network call
+            that hits the governance canister, HTTPS outcalls, or the ledger must confirm your identity. Staying signed in keeps
+            the WebAuthn delegation cached so the backend can authorize your requests and debit fees accurately. If you log out,
+            simply click “Login with Internet Identity” again to resume paid actions.
+          `,
+          helper('The status pill in the navigation shows whether you are authenticated and able to trigger fetches.')
+        ),
+        qa(
+          '54) How do payments and deposits work?',
+          `
+            Every authenticated principal receives a <b>dedicated ICP deposit subaccount</b>. When you initiate a paid action,
+            the backend checks your balance, reserves the per-fetch fee (currently 0.2 ICP plus network fee), performs the work,
+            and only then settles the transaction to the configured beneficiary. You can top up the subaccount from any wallet by
+            sending ICP to the address displayed in the “Deposit” dialog. Deposits happen on the legacy ICP ledger so funds show
+            up within a few blocks.
+          `,
+          helper('The balance widget lists your subaccount, provides copy buttons, and links to the ledger explorer so you can track receipts.')
+        ),
+        qa(
+          '55) How can I review or top up my balance?',
+          `
+            Open the <em>Payments</em> drawer (wallet icon). It shows your principal, subaccount ID, current balance, recent debits,
+            and a “Deposit” CTA with a QR code + raw hex address. Use any NNS wallet, hardware wallet, or ledger CLI to send ICP
+            to that subaccount. After topping up, refresh balances via the UI button; the backend queries the ledger and updates
+            your available funds instantly.
+          `,
+          helper('The drawer also exposes a one-click “Copy account identifier” control to avoid transcription mistakes.')
+        ),
+        qa(
+          '56) Why does the app forward fees to a beneficiary address?',
+          `
+            Cycles for HTTPS outcalls, GitHub API usage, and ledger queries must be funded. The backend transfers the collected
+            ICP from your deposit subaccount to a configured beneficiary account so the operator can convert it into cycles and
+            keep the service online. When self-hosting you should replace the default address with one you control to capture
+            those fees and fund your own deployment (details below).
+          `,
+          helper('We display the beneficiary preview inside the payments drawer so you always know where funds go.')
+        ),
+      ])}
+
+      ${section('13. Self-Hosting, Repository & Guide', [
+        qa(
+          '57) Where is the source code and can I deploy my own instance?',
+          `
+            Yes. The entire project is open source at <a href="https://github.com/dickhery/proposal_verifier" target="_blank" rel="noreferrer">github.com/dickhery/proposal_verifier</a>.
+            Clone the repository, review the README for prerequisites (dfx, node, vessel/mops), and you can deploy identical frontend
+            and backend canisters on your own Internet Computer account.
+          `,
+          helper('The app links to the repository from the footer so you can jump directly to the codebase.')
+        ),
+        qa(
+          '58) What steps are required to self-host the Proposal Verifier?',
+          `
+            <ol>
+              <li>
+                <b>Clone</b> the repository and install dependencies (<code>npm install</code> for the frontend,
+                <code>mops install</code> for Motoko libs).
+              </li>
+              <li>
+                <b>Customize</b> configuration (beneficiary address, optional branding, guide links).
+              </li>
+              <li>
+                <b>Deploy</b> the canisters via <code>dfx deploy --network ic</code> (or
+                <code>--network local</code> for testing).
+              </li>
+              <li>
+                <b>Update</b> the generated canister IDs inside the frontend <code>.env</code> or constants so the UI targets your
+                backend.
+              </li>
+              <li>
+                <b>Fund</b> the backend canister with cycles and test authentication + payment flows before inviting users.
+              </li>
+            </ol>
+          `,
+          helper('Our deployment checklist modal mirrors these steps and links to the README sections you need most often.')
+        ),
+        qa(
+          '59) Which beneficiary address ships in the repo and what should I change?',
+          `
+            The default backend constant <code>BENEFICIARY_ACCOUNT_HEX</code> is set to <code>2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e</code>.
+            Before deploying your own instance, replace it with a 64-hex account identifier you control (for example, the subaccount
+            from your NNS wallet). Update the constant in <code>src/proposal_verifier_backend/main.mo</code>, redeploy the backend, and
+            confirm the payments drawer displays your address before onboarding users.
+          `,
+          helper('The UI surfaces the active beneficiary so you can verify your customization worked.')
+        ),
+        qa(
+          '60) Where can I find the comprehensive Proposal Verification Guide?',
+          `
+            The project ships a detailed walkthrough at <a href="https://github.com/dickhery/proposal_verifier/blob/main/GUIDE.md" target="_blank" rel="noreferrer">GUIDE.md</a>.
+            It expands on every checklist item, shows shell transcripts for IC-OS rebuilds, explains payment wiring, and includes
+            troubleshooting matrices for common mismatches. Keep it open alongside the app whenever you want extra context or
+            need to double-check a manual step.
+          `,
+          helper('Contextual “Learn more” links in the UI jump straight into the relevant GUIDE.md section.')
+        ),
+        qa(
+          '61) How do I troubleshoot a self-hosted deployment if authentication or payments fail?',
+          `
+            Start by confirming Internet Identity integration: ensure your frontend references the correct <code>canisterIds.json</code>
+            and that the II origin is authorized. Next, inspect backend logs (<code>dfx canister log</code>) for ledger transfer errors or
+            missing cycles. Verify that your customized beneficiary address is a valid account identifier (64 hex chars) and that
+            the ledger fees are funded. Finally, re-run <code>dfx deploy</code> after any code changes to pick up new constants.
+          `,
+          helper('The deployment checklist highlights missing env vars and warns if ledger transfers fail so you can react quickly.')
+        ),
+      ])}
     </main>
   `;
 }
@@ -499,13 +627,13 @@ function section(title, content) {
   `;
 }
 
-function qa(question, answerHtml, appHelpHtml) {
+function qa(question, answerHtml, appHelpHtml = helper()) {
   return html`
     <details class="faq">
-      <summary><b>${unsafe(question)}</b></summary>
+      <summary><b>${renderHtml(question)}</b></summary>
       <div class="qa">
-        <p>${unsafe(answerHtml)}</p>
-        <p class="helper"><b>How this app helps:</b> ${unsafe(appHelpHtml)}</p>
+        <p>${renderHtml(answerHtml)}</p>
+        <p class="helper"><b>How this app helps:</b> ${renderHtml(appHelpHtml)}</p>
       </div>
     </details>
   `;
@@ -515,7 +643,9 @@ function helper(extra = 'It reduces copy/paste errors by surfacing links and exp
   return extra;
 }
 
-function unsafe(str) {
-  // We only ever pass our own hard-coded strings here (no user input).
-  return unsafeHTML(str);
+function renderHtml(value) {
+  if (value == null) {
+    return nothing;
+  }
+  return typeof value === 'string' ? unsafeHTML(value) : value;
 }
