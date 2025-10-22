@@ -1771,6 +1771,20 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     }
   }
 
+  #recommendedEncodeCommand() {
+    const raw = (this.recommendedArgCmd || '').trim();
+    if (!raw) return null;
+    const lines = raw.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/^didc\s+encode/i.test(trimmed)) {
+        const pipeIdx = trimmed.indexOf('|');
+        return pipeIdx >= 0 ? trimmed.slice(0, pipeIdx).trim() : trimmed;
+      }
+    }
+    return null;
+  }
+
   #buildDidcCommand() {
     // This builder is for producing HEX BYTES to paste, not hashing directly.
     // `didc encode` already outputs hex text, so no `xxd -p` here.
@@ -1973,6 +1987,48 @@ ${linuxVerify}</pre>
 
   #renderArgSection(p) {
     const didcCmd = this.#buildDidcCommand();
+    const encodeLine =
+      this.#recommendedEncodeCommand() ||
+      "didc encode -d path/to/service.did -t '(candid-type)' \"$UPGRADE_ARG\"";
+    const macVerifyFromEncode = `${encodeLine} | xxd -r -p | shasum -a 256 | awk '{print $1}'`;
+    const linuxVerifyFromEncode = `${encodeLine} | xxd -r -p | sha256sum | awk '{print $1}'`;
+    const repoUrl = (p?.extractedRepo || '').trim();
+    const commitHash = (p?.extractedCommit || '').trim();
+    const defaultRepoUrl = repoUrl || 'https://github.com/<org>/<repo>';
+    const cloneCommand =
+      defaultRepoUrl.startsWith('http') || defaultRepoUrl.startsWith('git@')
+        ? `git clone ${defaultRepoUrl}`
+        : `git clone https://github.com/${defaultRepoUrl.replace(/^\/?/, '')}`;
+    const repoDirName = (() => {
+      const source = defaultRepoUrl;
+      if (source.startsWith('git@')) {
+        const afterColon = source.split(':')[1] || '';
+        const candidate = afterColon.split('/').pop() || '';
+        const sanitized = candidate.replace(/\.git$/i, '');
+        return sanitized || '<repo-directory>';
+      }
+      try {
+        const url = new URL(source);
+        const segments = url.pathname.split('/').filter(Boolean);
+        if (segments.length) {
+          const candidate = segments[segments.length - 1].replace(/\.git$/i, '');
+          return candidate || '<repo-directory>';
+        }
+      } catch (err) {
+        const parts = source.split('/').filter(Boolean);
+        if (parts.length) {
+          const candidate = parts[parts.length - 1].replace(/\.git$/i, '');
+          if (!candidate.includes('<') && candidate !== 'github.com') {
+            return candidate;
+          }
+        }
+      }
+      return '<repo-directory>';
+    })();
+    const checkoutCommand = commitHash ? `git checkout ${commitHash}` : 'git checkout <commit-hash>';
+    const checkoutSnippet = `${cloneCommand}\ncd ${repoDirName}\n${checkoutCommand}`;
+    const expectedArgHash = this.argHash || p?.proposal_arg_hash || 'the expected arg hash';
+
     return html`
       <section>
         <h2>Verify Arg Hash (Binary)</h2>
@@ -2050,6 +2106,69 @@ ${linuxVerify}</pre>
             <b>Important:</b> <code>didc encode</code> outputs <i>hex text</i>. To verify the
             on-chain <code>arg_hash</code>, hash the <b>bytes</b> by converting that hex back to
             bytes (<code>xxd -r -p</code>) before hashing.
+          </p>
+        </details>
+
+        <details>
+          <summary>Step-by-step: encode args with didc (macOS/Linux)</summary>
+          <ol class="steps-list">
+            <li>
+              <strong>Prepare your tools (one-time).</strong>
+              <ul>
+                <li>
+                  <b>Git:</b> macOS <code>xcode-select --install</code>; Linux
+                  <code>sudo apt update && sudo apt install git</code>.
+                </li>
+                <li>
+                  <b>didc:</b> install Rust with
+                  <code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</code>, then
+                  <code>cargo install --git https://github.com/dfinity/candid didc</code>. Verify with
+                  <code>didc --version</code>.
+                </li>
+                <li>
+                  <b>Hex/hash helpers:</b> macOS provides <code>shasum -a 256</code>; Linux can use
+                  <code>sha256sum</code> and install <code>xxd</code> via <code>sudo apt install vim-common</code>
+                  if missing.
+                </li>
+              </ul>
+            </li>
+            <li>
+              <strong>Check out the proposal sources.</strong>
+              <ul>
+                <li><b>Repository:</b> <code>${defaultRepoUrl}</code></li>
+                <li><b>Commit:</b> <code>${commitHash || '<commit-hash>'}</code></li>
+              </ul>
+              <p>Run:</p>
+              <pre class="cmd-pre">${checkoutSnippet}</pre>
+            </li>
+            <li>
+              <strong>Encode the Candid args to hex bytes.</strong>
+              <p>
+                Copy the Candid text from the proposal summary or repo into a shell variable (single quotes
+                keep multi-line values intact):
+              </p>
+              <pre class="cmd-pre">UPGRADE_ARG='(paste Candid text here)'</pre>
+              <p>Then encode it with <code>didc</code> (drop any hashing pipes from summary commands):</p>
+              <pre class="cmd-pre">${encodeLine}</pre>
+              <p>The command prints the raw hex bytes—paste that output into the <b>Hex Bytes</b> box below.</p>
+            </li>
+            <li>
+              <strong>Verify in the app.</strong> Select <b>Hex Bytes</b>, paste the hex, and press
+              <b>Verify Arg Hash</b>. The computed digest must equal the expected value shown here.
+            </li>
+            <li>
+              <strong>Optional: confirm the digest locally.</strong>
+              <pre class="cmd-pre"># macOS
+${macVerifyFromEncode}
+
+# Linux
+${linuxVerifyFromEncode}</pre>
+              <p>The output should match <code>${expectedArgHash}</code>.</p>
+            </li>
+          </ol>
+          <p style="margin-top:8px;">
+            <b>Windows tip:</b> Use Git Bash or WSL so that <code>didc</code>, <code>xxd</code>, and
+            <code>sha256sum</code>/<code>shasum</code> are available.
           </p>
         </details>
 

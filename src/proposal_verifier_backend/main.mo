@@ -195,7 +195,12 @@ persistent actor verifier {
   // Cycles reserved for HTTPS outcalls. Responses we fetch are well under 2 MiB, and
   // per IC pricing (≈400M base + ~2k/byte) the total cost stays below 1B cycles.
   // Reserving 1B keeps ample headroom while avoiding the previous 5B over-allocation.
+  // If boundary nodes report that more cycles are required, we retry with the
+  // requested amount plus a small buffer (see `httpRequestWithRetries`).
   let HTTP_OUTCALL_CYCLES : Nat = 1_000_000_000;
+  let HTTP_OUTCALL_MAX_ATTEMPTS : Nat = 2;
+  let HTTP_OUTCALL_RETRY_BUFFER_MIN : Nat = 100_000_000;
+  let HTTP_OUTCALL_RETRY_BUFFER_PERCENT : Nat = 10;
 
   // Minimum cycles balance required before billing/fetching to avoid failed calls after charging users
   let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
@@ -1217,6 +1222,65 @@ persistent actor verifier {
     acc;
   };
 
+  func extractLastNumberFromText(msg : Text) : ?Nat {
+    var current : Text = "";
+    var last : Text = "";
+    for (c in Text.toIter(msg)) {
+      let code = Char.toNat32(c);
+      if (code >= 48 and code <= 57) {
+        current := current # Char.toText(c);
+      } else if (c == '_') {
+        if (Text.size(current) > 0) {
+          // ignore underscores inside digit groups
+        };
+      } else {
+        if (Text.size(current) > 0) {
+          last := current;
+          current := "";
+        };
+      };
+    };
+    if (Text.size(current) > 0) {
+      last := current;
+    };
+    if (Text.size(last) == 0) {
+      return null;
+    };
+    Nat.fromText(last);
+  };
+
+  func httpRequestWithRetries(req : HttpRequestArgs) : async Result.Result<HttpResponsePayload, Text> {
+    var cycles : Nat = HTTP_OUTCALL_CYCLES;
+    var attempt : Nat = 0;
+    label attemptLoop while (attempt < HTTP_OUTCALL_MAX_ATTEMPTS) {
+      attempt += 1;
+      Cycles.add<system>(cycles);
+      try {
+        let resp = await Management.http_request(req);
+        return #ok(resp);
+      } catch (e) {
+        let message = Error.message(e);
+        if (attempt < HTTP_OUTCALL_MAX_ATTEMPTS) {
+          switch (extractLastNumberFromText(message)) {
+            case (?required) {
+              if (required > cycles) {
+                var extra : Nat = required / HTTP_OUTCALL_RETRY_BUFFER_PERCENT;
+                if (extra < HTTP_OUTCALL_RETRY_BUFFER_MIN) {
+                  extra := HTTP_OUTCALL_RETRY_BUFFER_MIN;
+                };
+                cycles := required + extra;
+                continue attemptLoop;
+              };
+            };
+            case null {};
+          };
+        };
+        return #err("HTTPS outcall failed: " # message);
+      };
+    };
+    return #err("HTTPS outcall failed: retries exhausted");
+  };
+
   // Fetch a text resource with the generic transform; returns null on error
   func fetchText(url : Text) : async ?Text {
     let req : HttpRequestArgs = {
@@ -1233,16 +1297,19 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
-    try {
-      let resp = await Management.http_request(req);
-      if (resp.status == 200) {
-        switch (Text.decodeUtf8(resp.body)) {
-          case (?t) { ?t };
-          case null { null };
+    switch (await httpRequestWithRetries(req)) {
+      case (#ok(resp)) {
+        if (resp.status == 200) {
+          switch (Text.decodeUtf8(resp.body)) {
+            case (?t) { ?t };
+            case null { null };
+          }
+        } else {
+          null
         }
-      } else null
-    } catch (e) { null };
+      };
+      case (#err(_)) { null };
+    }
   };
 
   // Try to derive checksum hash for the given release page HTML:
@@ -1589,16 +1656,19 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
-    try {
-      let response = await Management.http_request(request);
-      if (response.status == 200) {
-        switch (Text.decodeUtf8(response.body)) {
-          case (?bodyText) { #ok(bodyText) };
-          case null { #err("Unable to decode GitHub response") };
+    switch (await httpRequestWithRetries(request)) {
+      case (#ok(response)) {
+        if (response.status == 200) {
+          switch (Text.decodeUtf8(response.body)) {
+            case (?bodyText) { #ok(bodyText) };
+            case null { #err("Unable to decode GitHub response") };
+          };
+        } else {
+          #err("GitHub returned status " # Nat.toText(response.status));
         };
-      } else { #err("GitHub returned status " # Nat.toText(response.status)) };
-    } catch (e) { #err("HTTPS outcall failed: " # Error.message(e)) };
+      };
+      case (#err(errMsg)) { #err(errMsg) };
+    };
   };
 
   // Deterministic fetcher (blocked for dynamic domains)
@@ -1629,13 +1699,16 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
-    try {
-      let response = await Management.http_request(request);
-      if (response.status == 200) {
-        #ok({ body = response.body; headers = response.headers });
-      } else { #err("Fetch failed with status " # Nat.toText(response.status)) };
-    } catch (e) { #err("Outcall failed: " # Error.message(e)) };
+    switch (await httpRequestWithRetries(request)) {
+      case (#ok(response)) {
+        if (response.status == 200) {
+          #ok({ body = response.body; headers = response.headers });
+        } else {
+          #err("Fetch failed with status " # Nat.toText(response.status));
+        };
+      };
+      case (#err(errMsg)) { #err(errMsg) };
+    };
   };
 
   // Placeholder – client computes SHA-256; this keeps the candid stable
@@ -1706,19 +1779,22 @@ persistent actor verifier {
         context = Blob.fromArray([]);
       };
     };
-    Cycles.add<system>(HTTP_OUTCALL_CYCLES);
-    try {
-      let resp = await Management.http_request(req);
-      if (resp.status == 200) {
-        switch (Text.decodeUtf8(resp.body)) {
-          case (?t) {
-            icApiCacheStore(id, t, Time.now());
-            ?t;
+    switch (await httpRequestWithRetries(req)) {
+      case (#ok(resp)) {
+        if (resp.status == 200) {
+          switch (Text.decodeUtf8(resp.body)) {
+            case (?t) {
+              icApiCacheStore(id, t, Time.now());
+              ?t;
+            };
+            case null { null };
           };
-          case null null;
-        };
-      } else { null };
-    } catch (e) { null };
+        } else {
+          null;
+        }
+      };
+      case (#err(_)) { null };
+    };
   };
 
   // Prefer WASM hash, fall back to other common markers
