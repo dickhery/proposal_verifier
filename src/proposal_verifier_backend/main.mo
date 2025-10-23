@@ -174,6 +174,10 @@ persistent actor verifier {
     transfer : (Ledger.TransferArgs) -> async Ledger.TransferResult;
   };
 
+  let CMC = actor ("rkp4c-7iaaa-aaaaa-aaaca-cai") : actor {
+    get_icp_xdr_conversion_rate : () -> async { xdr_permyriad_per_icp : Nat64; timestamp_seconds : Nat64 };
+  };
+
   let NNS_GOVERNANCE : Principal = Principal.fromText("rrkah-fqaaa-aaaaa-aaaaq-cai");
   let governance = actor (Principal.toText(NNS_GOVERNANCE)) : actor {
     get_proposal_info : (Nat64) -> async ?GovernanceTypes.ProposalInfo;
@@ -219,6 +223,10 @@ persistent actor verifier {
   stable var lastFetchCyclesBurned : Nat = 0;
   stable var fetchCyclesHistory : [Nat] = [];
   stable var fetchCyclesTotal : Nat = 0;
+  let CYCLES_PER_XDR : Nat = 1_000_000_000_000;
+  let MARGIN_BPS : Nat = 500;
+  stable var last_xdr_permyriad_per_icp : Nat64 = 0;
+  stable var last_rate_timestamp_seconds : Nat64 = 0;
   let DEPOSIT_CACHE_MAX : Nat = 128;
   let FETCH_CYCLE_HISTORY_LIMIT : Nat = 100;
 
@@ -307,6 +315,69 @@ persistent actor verifier {
     buf.add(cycles);
     fetchCyclesHistory := Buffer.toArray(buf);
     fetchCyclesTotal := fetchCyclesTotal + cycles;
+  };
+
+  func avgFetchCycles() : Nat {
+    let count = Array.size(fetchCyclesHistory);
+    if (count == 0) {
+      if (lastFetchCyclesBurned > 0) { lastFetchCyclesBurned } else { HTTP_OUTCALL_CYCLES };
+    } else {
+      fetchCyclesTotal / count;
+    }
+  };
+
+  func feeE8sFrom(avg_cycles : Nat, xdr_permyriad_per_icp : Nat64) : Nat64 {
+    if (avg_cycles == 0 or xdr_permyriad_per_icp == 0) return FEE_FETCH_PROPOSAL_E8S;
+
+    let cycles_per_icp_num : Nat = CYCLES_PER_XDR * Nat64.toNat(xdr_permyriad_per_icp);
+    let cycles_per_icp : Nat = cycles_per_icp_num / 10_000;
+
+    if (cycles_per_icp == 0) return FEE_FETCH_PROPOSAL_E8S;
+
+    let numerator : Nat = avg_cycles * (10_000 + MARGIN_BPS) * 100_000_000;
+    let denominator : Nat = cycles_per_icp * 10_000;
+
+    let fee_e8s_nat : Nat =
+      if (denominator == 0) { 0 } else { (numerator + (denominator - 1)) / denominator };
+
+    Nat64.fromNat(fee_e8s_nat);
+  };
+
+  async func fetchIcpXdrRateFromCMC() : async ?{ xdr_permyriad_per_icp : Nat64; timestamp_seconds : Nat64 } {
+    try {
+      let r = await CMC.get_icp_xdr_conversion_rate();
+      ?r;
+    } catch (e) {
+      null;
+    }
+  };
+
+  async func computeDynamicFetchFeeE8sUpdate() : async Nat64 {
+    let avg = avgFetchCycles();
+
+    switch (await fetchIcpXdrRateFromCMC()) {
+      case (?r) {
+        last_xdr_permyriad_per_icp := r.xdr_permyriad_per_icp;
+        last_rate_timestamp_seconds := r.timestamp_seconds;
+        return feeE8sFrom(avg, r.xdr_permyriad_per_icp);
+      };
+      case null {
+        if (last_xdr_permyriad_per_icp > 0) {
+          return feeE8sFrom(avg, last_xdr_permyriad_per_icp);
+        } else {
+          return FEE_FETCH_PROPOSAL_E8S;
+        };
+      };
+    };
+  };
+
+  func estimateFetchFeeE8sFromCache() : Nat64 {
+    let avg = avgFetchCycles();
+    if (last_xdr_permyriad_per_icp > 0) {
+      return feeE8sFrom(avg, last_xdr_permyriad_per_icp);
+    } else {
+      return FEE_FETCH_PROPOSAL_E8S;
+    }
   };
 
   // ---- Track the last observed ledger balance per user (for delta detection) ----
@@ -692,10 +763,56 @@ persistent actor verifier {
   public query func getFees() : async {
     fetchProposal_e8s : Nat64;
     httpOutcall_e8s : Nat64;
+    dynamic_info : ?{
+      avg_cycles : Nat;
+      xdr_permyriad_per_icp : Nat64;
+      margin_bps : Nat;
+    };
   } {
     {
-      fetchProposal_e8s = FEE_FETCH_PROPOSAL_E8S;
+      fetchProposal_e8s = estimateFetchFeeE8sFromCache();
       httpOutcall_e8s = 0;
+      dynamic_info = ?{
+        avg_cycles = avgFetchCycles();
+        xdr_permyriad_per_icp = last_xdr_permyriad_per_icp;
+        margin_bps = MARGIN_BPS;
+      };
+    };
+  };
+
+  public shared func quoteFetchProposalFee() : async {
+    fee_e8s : Nat64;
+    avg_cycles : Nat;
+    xdr_permyriad_per_icp : Nat64;
+    cycles_per_icp : Nat;
+    margin_bps : Nat;
+    rate_timestamp_seconds : Nat64;
+  } {
+    let avg = avgFetchCycles();
+
+    var xdr_pmy : Nat64 = last_xdr_permyriad_per_icp;
+    var ts : Nat64 = last_rate_timestamp_seconds;
+
+    switch (await fetchIcpXdrRateFromCMC()) {
+      case (?r) {
+        xdr_pmy := r.xdr_permyriad_per_icp;
+        ts := r.timestamp_seconds;
+        last_xdr_permyriad_per_icp := xdr_pmy;
+        last_rate_timestamp_seconds := ts;
+      };
+      case null {};
+    };
+
+    let fee = if (xdr_pmy > 0) feeE8sFrom(avg, xdr_pmy) else FEE_FETCH_PROPOSAL_E8S;
+    let cycles_per_icp : Nat = if (xdr_pmy == 0) 0 else (CYCLES_PER_XDR * Nat64.toNat(xdr_pmy)) / 10_000;
+
+    {
+      fee_e8s = fee;
+      avg_cycles = avg;
+      xdr_permyriad_per_icp = xdr_pmy;
+      cycles_per_icp = cycles_per_icp;
+      margin_bps = MARGIN_BPS;
+      rate_timestamp_seconds = ts;
     };
   };
 
@@ -1509,8 +1626,9 @@ persistent actor verifier {
       case (#ok(())) {};
     };
 
-    // bill + forward fee before work (single charge)
-    switch (await chargeAndForward(caller, FEE_FETCH_PROPOSAL_E8S, "fetch proposal")) {
+    let dynamicFee : Nat64 = await computeDynamicFetchFeeE8sUpdate();
+
+    switch (await chargeAndForward(caller, dynamicFee, "fetch proposal")) {
       case (#err(e)) return finish(#err(e));
       case (#ok(remaining)) {
         billingSnapshot := {

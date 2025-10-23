@@ -660,11 +660,13 @@ class App {
   backend = anon_backend; // actor (anonymous by default, replaced after login)
   authClient = null;
   identity = null;
+  isAuthenticating = false;
   userPrincipal = null;
   userBalance = 0; // in e8s
 
-  // DEFAULT FEES (Fetch Proposal requires 0.2 ICP = 20_000_000 e8s)
+  // DEFAULT FEES (dynamic quote fetched from backend; fallback remains 0.2 ICP)
   fees = { fetchProposal_e8s: 20_000_000n, httpOutcall_e8s: 0n }; // defaults, loaded from backend
+  feesDynamicInfo = null;
 
   // Deposit/account state
   depositOwner = null; // canister principal (string)
@@ -769,6 +771,9 @@ class App {
   }
 
   async #login() {
+    if (!this.authClient) return;
+    this.isAuthenticating = true;
+    this.#render();
     try {
       await this.authClient.login({
         identityProvider: 'https://id.ai/#authorize',
@@ -779,18 +784,24 @@ class App {
           } catch (e) {
             alert('Login completed but session setup failed: ' + (e?.message || String(e)));
           }
+          this.isAuthenticating = false;
           this.#render();
         },
         onError: (err) => {
           alert('Login error: ' + (err?.message || String(err)));
+          this.isAuthenticating = false;
+          this.#render();
         },
       });
     } catch (e) {
       alert('Login failed: ' + (e?.message || String(e)));
+      this.isAuthenticating = false;
+      this.#render();
     }
   }
 
   async #logout() {
+    this.isAuthenticating = false;
     try {
       await this.authClient.logout();
     } catch (e) {
@@ -801,6 +812,8 @@ class App {
     this.userPrincipal = null;
     this.backend = anon_backend;
     this.userBalance = 0;
+    this.fees = { fetchProposal_e8s: 20_000_000n, httpOutcall_e8s: 0n };
+    this.feesDynamicInfo = null;
 
     this.proposalData = null;
     this.fullProposalInfo = null;
@@ -860,15 +873,44 @@ class App {
   async #loadFees() {
     try {
       const f = await this.backend.getFees();
-      const MIN_FETCH_FEE_E8S = 20_000_000n; // 0.2 ICP
-      const fetch = f?.fetchProposal_e8s ?? MIN_FETCH_FEE_E8S;
-      const outcall = f?.httpOutcall_e8s ?? 0n;
+      const fetchRaw = f?.fetchProposal_e8s;
+      const outcallRaw = f?.httpOutcall_e8s;
+      const fetch =
+        typeof fetchRaw === 'bigint'
+          ? fetchRaw
+          : BigInt(fetchRaw ?? 20_000_000);
+      const outcall =
+        typeof outcallRaw === 'bigint'
+          ? outcallRaw
+          : BigInt(outcallRaw ?? 0);
       this.fees = {
-        fetchProposal_e8s: fetch < MIN_FETCH_FEE_E8S ? MIN_FETCH_FEE_E8S : fetch,
-        httpOutcall_e8s: outcall > 0n ? outcall : 0n,
+        fetchProposal_e8s: fetch,
+        httpOutcall_e8s: outcall,
       };
+      this.feesDynamicInfo = f?.dynamic_info ?? null;
     } catch {
       // keep defaults
+    }
+  }
+
+  async #quoteNow() {
+    try {
+      const q = await this.backend.quoteFetchProposalFee();
+      const icp = Number(q.fee_e8s) / 1e8;
+      const lines = [
+        `Live quote: ${icp.toFixed(8)} ICP`,
+        `— avg cycles: ${q.avg_cycles}`,
+        `— xdr_permyriad_per_icp: ${q.xdr_permyriad_per_icp}`,
+        `— cycles_per_icp: ${q.cycles_per_icp}`,
+        `— margin: ${q.margin_bps} bps`,
+      ];
+      if (q.rate_timestamp_seconds) {
+        lines.push(`— rate timestamp: ${new Date(Number(q.rate_timestamp_seconds) * 1000).toISOString()}`);
+      }
+      alert(lines.join('\n'));
+      await this.#loadFees();
+    } catch (e) {
+      alert('Quote failed: ' + (e?.message || String(e)));
     }
   }
 
@@ -3007,6 +3049,40 @@ ${linuxVerifyFromEncode}</pre>
         })
       : [];
 
+    const fetchFeeE8s = this.fees?.fetchProposal_e8s ?? 0n;
+    const fetchFeeIcp = Number(fetchFeeE8s) / 1e8;
+    const dynamicInfo = this.feesDynamicInfo;
+    const marginPercent = dynamicInfo?.margin_bps
+      ? Number(dynamicInfo.margin_bps) / 100
+      : 5;
+    const xdrPerIcp = dynamicInfo?.xdr_permyriad_per_icp
+      ? Number(dynamicInfo.xdr_permyriad_per_icp) / 10_000
+      : null;
+
+    const loginButton = html`
+      <button
+        class=${`btn${this.identity ? ' secondary' : ''}`}
+        ?disabled=${this.isAuthenticating && !this.identity}
+        @click=${() => (this.identity ? this.#logout() : this.#login())}
+      >
+        ${this.identity
+          ? 'Logout'
+          : this.isAuthenticating
+          ? 'Authenticating…'
+          : 'Login with Internet Identity'}
+      </button>
+    `;
+
+    const quoteButton = html`
+      <button
+        class="btn secondary"
+        style="font-size:12px; padding:4px 8px;"
+        @click=${() => this.#quoteNow()}
+      >
+        Refresh price
+      </button>
+    `;
+
     const body = html`
       <nav class="topbar">
         <h1 class="grow">IC Proposal Verifier</h1>
@@ -3014,17 +3090,29 @@ ${linuxVerifyFromEncode}</pre>
         <div style="display:flex; gap:8px; align-items:center;">
           ${this.identity
             ? html`
-                <div style="text-align:right;">
-                <!--  <div style="font-size:12px;">
-                    <b>User</b>: <code>${this.userPrincipal}</code>
-                  </div>  -->
+                <div style="text-align:right; display:flex; flex-direction:column; gap:4px; align-items:flex-end;">
                   <div style="font-size:12px;">
                     <b>Balance</b>: ${(this.userBalance / 1e8).toFixed(8)} ICP
                   </div>
-                  <div style="font-size:12px;">
-                    <b>Fees</b>: Fetch Proposal = ${(Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(1)}
-                    ICP <em>(+ 0.0001 ICP network fee)</em>
+                  <div
+                    style="font-size:12px; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; align-items:center;"
+                  >
+                    <span>
+                      <b>Fees</b>: Fetch Proposal ≈ ${fetchFeeIcp.toFixed(6)} ICP
+                      <em>(+ 0.0001 ICP network fee)</em>
+                    </span>
+                    ${quoteButton}
                   </div>
+                  <div style="font-size:12px;">
+                    <b>Pricing basis</b>:
+                    ${this.#formatCyclesDisplay(dynamicInfo?.avg_cycles ?? this.fetchCyclesAverage)}
+                    cycles avg, margin ≈ ${marginPercent.toFixed(2)}%
+                  </div>
+                  ${xdrPerIcp !== null
+                    ? html`<div style="font-size:12px;">
+                        <b>Cached rate</b>: ${xdrPerIcp.toFixed(4)} XDR/ICP
+                      </div>`
+                    : null}
                   <div style="font-size:12px;">
                     <b>Average cycles burned</b>
                     ${this.fetchCyclesCount > 0
@@ -3039,15 +3127,9 @@ ${linuxVerifyFromEncode}</pre>
                     ${this.#formatCyclesDisplay(this.lastFetchCyclesBurned)}
                   </div>
                 </div>
-                <button class="btn secondary" @click=${() => this.#logout()}>
-                  Logout
-                </button>
               `
-            : html`
-                <button class="btn" @click=${() => this.#login()}>
-                  Login with Internet Identity
-                </button>
-              `}
+            : null}
+          ${loginButton}
           <a
             class="btn secondary"
             href=${GUIDE_URL}
@@ -3092,9 +3174,11 @@ ${linuxVerifyFromEncode}</pre>
                   from this address when you run billed actions (e.g. <b>Fetch Proposal</b>).
                 </p>
                 <p>
-                  Each Fetch Proposal transfer moves <b>0.2 ICP</b> (plus the 0.0001 ICP network fee)
-                  to account identifier
-                  <code>${BENEFICIARY_ACCOUNT_IDENTIFIER}</code> to fund the canister's cycles.
+                  Each Fetch Proposal transfer debits the <b>current dynamic quote</b> (average
+                  cycles burned per fetch + ${marginPercent.toFixed(2)}% margin, converted using the
+                  latest ICP/XDR rate) plus the 0.0001 ICP network fee, forwarding it to account
+                  identifier <code>${BENEFICIARY_ACCOUNT_IDENTIFIER}</code> to fund the canister's
+                  cycles.
                 </p>
 
                 <div class="deposit-highlight">
