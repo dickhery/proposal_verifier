@@ -343,7 +343,7 @@ persistent actor verifier {
     Nat64.fromNat(fee_e8s_nat);
   };
 
-  async func fetchIcpXdrRateFromCMC() : async ?{ xdr_permyriad_per_icp : Nat64; timestamp_seconds : Nat64 } {
+  func fetchIcpXdrRateFromCMC() : async ?{ xdr_permyriad_per_icp : Nat64; timestamp_seconds : Nat64 } {
     try {
       let r = await CMC.get_icp_xdr_conversion_rate();
       ?r;
@@ -352,7 +352,7 @@ persistent actor verifier {
     }
   };
 
-  async func computeDynamicFetchFeeE8sUpdate() : async Nat64 {
+  func computeDynamicFetchFeeE8sUpdate() : async Nat64 {
     let avg = avgFetchCycles();
 
     switch (await fetchIcpXdrRateFromCMC()) {
