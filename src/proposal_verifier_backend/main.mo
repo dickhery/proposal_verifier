@@ -205,6 +205,39 @@ persistent actor verifier {
   // Minimum cycles balance required before billing/fetching to avoid failed calls after charging users
   let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
 
+  // Legacy conversion rate fields kept for stable compatibility with pre-v2 canisters.
+  // The verifier no longer relies on cached CMC responses, but the historical
+  // deployment stored these values in stable memory.  Reintroducing them here
+  // allows upgrades to proceed without data loss while `postupgrade` clears the
+  // stale state so future releases can safely remove them after a two-step
+  // migration.
+  type LegacyCmcConversion = {
+    timestamp_seconds : Nat64;
+    xdr_permyriad_per_icp : Nat64;
+  };
+  type LegacyCmcActor = actor {
+    get_icp_xdr_conversion_rate :
+      shared () -> async LegacyCmcConversion;
+  };
+
+  let DEFAULT_CMC : LegacyCmcActor = actor ("rkp4c-7iaaa-aaaaa-aaaca-cai") : LegacyCmcActor;
+
+  stable var CMC : LegacyCmcActor = DEFAULT_CMC;
+  stable var CYCLES_PER_XDR : Nat = 0;
+  stable var MARGIN_BPS : Nat = 0;
+  stable var last_rate_timestamp_seconds : Nat64 = 0;
+  stable var last_xdr_permyriad_per_icp : Nat64 = 0;
+
+  type LegacyRateSnapshot = {
+    cmc : LegacyCmcActor;
+    cyclesPerXdr : Nat;
+    marginBps : Nat;
+    lastRateTimestampSeconds : Nat64;
+    lastXdrPermyriadPerIcp : Nat64;
+  };
+
+  stable var legacyRatesSnapshot : ?LegacyRateSnapshot = null;
+
   // Very small, persistent balance map (Principal -> e8s).
   // Simple array-based storage to keep stability trivial.
   var balances : [(Principal, Nat64)] = [];
@@ -1983,6 +2016,29 @@ persistent actor verifier {
         });
       };
     };
+  };
+
+  system func preupgrade() {
+    legacyRatesSnapshot := ?{
+      cmc = CMC;
+      cyclesPerXdr = CYCLES_PER_XDR;
+      marginBps = MARGIN_BPS;
+      lastRateTimestampSeconds = last_rate_timestamp_seconds;
+      lastXdrPermyriadPerIcp = last_xdr_permyriad_per_icp;
+    };
+  };
+
+  system func postupgrade() {
+    // Clear the legacy rate cache because newer releases fetch deterministic
+    // pricing. Keeping the snapshot around makes it available for any future
+    // manual migration logic while ensuring subsequent upgrades can safely
+    // ignore the legacy cells.
+    legacyRatesSnapshot := null;
+    CMC := DEFAULT_CMC;
+    CYCLES_PER_XDR := 0;
+    MARGIN_BPS := 0;
+    last_rate_timestamp_seconds := 0;
+    last_xdr_permyriad_per_icp := 0;
   };
 
   // -----------------------------
