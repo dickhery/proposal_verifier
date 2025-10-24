@@ -192,15 +192,30 @@ persistent actor verifier {
   // ICP transfer fee (e8s) for legacy ledger transfer
   let TRANSFER_FEE_E8S : Nat64 = 10_000; // 0.0001 ICP
 
-  // Cycles reserved for HTTPS outcalls. Responses we fetch are well under 2 MiB, and
-  // per IC pricing (≈400M base + ~2k/byte) the total cost stays below 1B cycles.
-  // Reserving 1B keeps ample headroom while avoiding the previous 5B over-allocation.
-  // If boundary nodes report that more cycles are required, we retry with the
-  // requested amount plus a small buffer (see `httpRequestWithRetries`).
-  let HTTP_OUTCALL_CYCLES : Nat = 1_000_000_000;
+  // Cycle budgeting parameters for HTTPS outcalls.  These mirror the public
+  // pricing formula from the IC docs so we can fund calls precisely instead of
+  // over-reserving billions of cycles per request.  The replica count for the
+  // NNS subnet is currently 13; if that ever changes we can make this value
+  // configurable via an upgrade.
+  let HTTP_OUTCALL_REPLICA_COUNT : Nat = 13;
+  let HTTP_OUTCALL_BASE_REQUEST_FEE : Nat = 3_000_000;
+  let HTTP_OUTCALL_CONSENSUS_FEE_PER_NODE : Nat = 60_000;
+  let HTTP_OUTCALL_REQUEST_BYTE_FEE : Nat = 400;
+  let HTTP_OUTCALL_RESPONSE_BYTE_FEE : Nat = 800;
+  let HTTP_OUTCALL_INITIAL_CUSHION : Nat = 5_000_000;
+  let HTTP_OUTCALL_MIN_INITIAL_CYCLES : Nat = 200_000_000;
   let HTTP_OUTCALL_MAX_ATTEMPTS : Nat = 2;
   let HTTP_OUTCALL_RETRY_BUFFER_MIN : Nat = 100_000_000;
   let HTTP_OUTCALL_RETRY_BUFFER_PERCENT : Nat = 10;
+  let HTTP_OUTCALL_DEFAULT_MAX_RESPONSE_BYTES : Nat = 2_000_000;
+
+  // Endpoint-specific response caps (chosen based on observed payload sizes
+  // in production).  Keeping these tight dramatically reduces the cycles we
+  // must escrow up-front for each HTTPS outcall.
+  let MAX_RESPONSE_BYTES_GENERIC_TEXT : Nat64 = 512_000; // HTML / checksum files
+  let MAX_RESPONSE_BYTES_GITHUB_COMMIT : Nat64 = 400_000;
+  let MAX_RESPONSE_BYTES_IC_API_JSON : Nat64 = 400_000;
+  let MAX_RESPONSE_BYTES_FETCH_DOCUMENT : Nat64 = 1_500_000;
 
   // Minimum cycles balance required before billing/fetching to avoid failed calls after charging users
   let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
@@ -1282,8 +1297,49 @@ persistent actor verifier {
     Nat.fromText(last);
   };
 
+  func httpMaxResponseBytes(req : HttpRequestArgs) : Nat {
+    switch (req.max_response_bytes) {
+      case (?n) { Nat64.toNat(n) };
+      case null { HTTP_OUTCALL_DEFAULT_MAX_RESPONSE_BYTES };
+    };
+  };
+
+  func httpRequestSizeBytes(req : HttpRequestArgs) : Nat {
+    // Approximate the total request bytes by counting URL, headers, and body.
+    var total : Nat = 0;
+    switch (req.method) {
+      case (#get) { total += 4 }; // "GET "
+      case (#head) { total += 5 }; // "HEAD "
+      case (#post) { total += 5 }; // "POST "
+    };
+    total += Text.size(req.url);
+    total += 12; // " HTTP/1.1\r\n"
+    for (header in req.headers.vals()) {
+      total += Text.size(header.name) + Text.size(header.value) + 4; // ": " + CRLF
+    };
+    total += 2; // trailing CRLF before body
+    switch (req.body) {
+      case (?b) { total += Blob.size(b) };
+      case null {};
+    };
+    total;
+  };
+
+  func estimateHttpOutcallCycles(req : HttpRequestArgs) : Nat {
+    let requestBytes = httpRequestSizeBytes(req);
+    let maxResponseBytes = httpMaxResponseBytes(req);
+    let n = HTTP_OUTCALL_REPLICA_COUNT;
+    let baseFee = (HTTP_OUTCALL_BASE_REQUEST_FEE + HTTP_OUTCALL_CONSENSUS_FEE_PER_NODE * n) * n;
+    let sizeFee = (HTTP_OUTCALL_REQUEST_BYTE_FEE * requestBytes + HTTP_OUTCALL_RESPONSE_BYTE_FEE * maxResponseBytes) * n;
+    var total = baseFee + sizeFee + HTTP_OUTCALL_INITIAL_CUSHION;
+    if (total < HTTP_OUTCALL_MIN_INITIAL_CYCLES) {
+      total := HTTP_OUTCALL_MIN_INITIAL_CYCLES;
+    };
+    total;
+  };
+
   func httpRequestWithRetries(req : HttpRequestArgs) : async Result.Result<HttpResponsePayload, Text> {
-    var cycles : Nat = HTTP_OUTCALL_CYCLES;
+    var cycles : Nat = estimateHttpOutcallCycles(req);
     var attempt : Nat = 0;
     label attemptLoop while (attempt < HTTP_OUTCALL_MAX_ATTEMPTS) {
       attempt += 1;
@@ -1324,7 +1380,7 @@ persistent actor verifier {
         { name = "Accept-Encoding"; value = "identity" },
       ];
       body = null;
-      max_response_bytes = ?2_000_000;
+      max_response_bytes = ?MAX_RESPONSE_BYTES_GENERIC_TEXT;
       transform = ?{
         function = { principal = Principal.fromActor(verifier); method_name = "generalTransform" };
         context = Blob.fromArray([]);
@@ -1680,7 +1736,7 @@ persistent actor verifier {
         { name = "Pragma"; value = "no-cache" },
       ];
       body = null;
-      max_response_bytes = ?1_000_000;
+      max_response_bytes = ?MAX_RESPONSE_BYTES_GITHUB_COMMIT;
       transform = ?{
         function = {
           principal = Principal.fromActor(verifier);
@@ -1723,7 +1779,7 @@ persistent actor verifier {
         { name = "Accept-Encoding"; value = "identity" },
       ];
       body = null;
-      max_response_bytes = ?2_000_000;
+      max_response_bytes = ?MAX_RESPONSE_BYTES_FETCH_DOCUMENT;
       transform = ?{
         function = {
           principal = Principal.fromActor(verifier);
@@ -1803,7 +1859,7 @@ persistent actor verifier {
         { name = "Accept-Encoding"; value = "identity" },
       ];
       body = null;
-      max_response_bytes = ?2_000_000;
+      max_response_bytes = ?MAX_RESPONSE_BYTES_IC_API_JSON;
       transform = ?{
         function = {
           principal = Principal.fromActor(verifier);
