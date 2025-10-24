@@ -2907,13 +2907,8 @@ ${linuxVerifyFromEncode}</pre>
     URL.revokeObjectURL(url);
   }
 
-  #handleExportMarkdown() {
-    this.reportGenerationDate = new Date().toISOString().slice(0, 10);
-    const data = this.#getExportData();
-    if (!data) {
-      alert('No proposal data to export.');
-      return;
-    }
+  #buildReportMarkdown(data) {
+    if (!data) return '';
     const headerText = this.#formatReportHeaderMarkdown(
       data.reportHeader,
       data.reportHeaderDefaults,
@@ -2921,11 +2916,22 @@ ${linuxVerifyFromEncode}</pre>
     );
     let md = headerText ? `${headerText}\n\n---\n\n` : '';
     md += `# Proposal ${data.id} Verification Report\n\n`;
-    md += `## Details\n- **Type**: ${data.type}\n- **Title**: ${data.title || 'N/A'}\n- **URL**: ${data.url}\n- **Summary**: \n${data.summary}\n\n`;
-    md += `## Extracted Info\n- **Repo**: ${data.extractedRepo || 'N/A'}\n- **Commit**: ${data.extractedCommit || 'N/A'} (${data.commitUrl || ''})\n- **Commit Status**: ${data.commitStatus || 'N/A'}\n\n`;
-    md += `## Hashes\n- **Onchain WASM**: ${data.onchainWasmHash || 'N/A'}\n- **Onchain Arg**: ${data.onchainArgHash || 'N/A'}\n- **Expected**: ${data.expectedHash || 'N/A'} (source: ${data.expectedHashSource || 'N/A'})\n- **Arg Match**: ${data.argMatch ? '✅' : '❌'}\n\n`;
-    md += `## Dashboard\n- **URL**: ${data.dashboardUrl}\n- **Snippet**: \n${data.payloadSnippet || 'N/A'}\n\n`;
-    const docExpectationLabel = this.#formatDocExpectationLabel();
+    md += `## Details\n- **Type**: ${data.type}\n- **Title**: ${data.title || 'N/A'}\n- **URL**: ${
+      data.url
+    }\n- **Summary**: \n${data.summary || 'N/A'}\n\n`;
+    const commitSegment = data.commitUrl ? ` (${data.commitUrl})` : '';
+    md += `## Extracted Info\n- **Repo**: ${data.extractedRepo || 'N/A'}\n- **Commit**: ${
+      data.extractedCommit || 'N/A'
+    }${commitSegment}\n- **Commit Status**: ${data.commitStatus || 'N/A'}\n\n`;
+    md += `## Hashes\n- **Onchain WASM**: ${data.onchainWasmHash || 'N/A'}\n- **Onchain Arg**: ${
+      data.onchainArgHash || 'N/A'
+    }\n- **Expected**: ${data.expectedHash || 'N/A'} (source: ${
+      data.expectedHashSource || 'N/A'
+    })\n- **Arg Match**: ${data.argMatch ? '✅' : '❌'}\n\n`;
+    md += `## Dashboard\n- **URL**: ${data.dashboardUrl}\n- **Snippet**: \n${
+      data.payloadSnippet || 'N/A'
+    }\n\n`;
+    const docExpectationLabel = data.docExpectationLabel || this.#formatDocExpectationLabel();
     const docLines = (data.extractedDocs || [])
       .map((d) => `- ${d.name}: ${d.hash || 'N/A'}`)
       .join('\n');
@@ -2942,8 +2948,25 @@ ${linuxVerifyFromEncode}</pre>
       })
       .join('\n');
     md += `## Checklist\n${checklistSection || 'None'}\n\n`;
-    md += `## Steps/Tools\n- **Steps**: ${data.verificationSteps || 'N/A'}\n- **Tools**: ${data.requiredTools || 'N/A'}\n\n`;
+    md += `## Steps/Tools\n- **Steps**: ${data.verificationSteps || 'N/A'}\n- **Tools**: ${
+      data.requiredTools || 'N/A'
+    }\n\n`;
     md += `## Rebuild Script\n\`\`\`bash\n${data.rebuildScript || 'N/A'}\n\`\`\`\n`;
+    return md;
+  }
+
+  #handleExportMarkdown() {
+    this.reportGenerationDate = new Date().toISOString().slice(0, 10);
+    const data = this.#getExportData();
+    if (!data) {
+      alert('No proposal data to export.');
+      return;
+    }
+    const md = this.#buildReportMarkdown(data);
+    if (!md) {
+      alert('Unable to generate report content.');
+      return;
+    }
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2951,6 +2974,59 @@ ${linuxVerifyFromEncode}</pre>
     a.download = `proposal_${data.id}_report.md`;
     a.click();
     URL.revokeObjectURL(url);
+    this.#render();
+  }
+
+  async #handleExportPdf() {
+    this.reportGenerationDate = new Date().toISOString().slice(0, 10);
+    const data = this.#getExportData();
+    if (!data) {
+      alert('No proposal data to export.');
+      return;
+    }
+
+    const md = this.#buildReportMarkdown(data);
+    if (!md) {
+      alert('Unable to generate report content.');
+      return;
+    }
+
+    let html2pdf;
+    try {
+      ({ default: html2pdf } = await import('html2pdf.js'));
+    } catch (error) {
+      console.error('Failed to load PDF exporter', error);
+      alert('Failed to load PDF exporter. Please try again.');
+      return;
+    }
+
+    const tempContainer = document.createElement('div');
+    tempContainer.style.position = 'fixed';
+    tempContainer.style.left = '-9999px';
+    tempContainer.style.top = '0';
+    tempContainer.style.width = '800px';
+    tempContainer.className = 'proposal-report-pdf-temp';
+    tempContainer.innerHTML = DOMPurify.sanitize(marked.parse(md));
+    document.body.appendChild(tempContainer);
+
+    try {
+      await html2pdf()
+        .set({
+          margin: 10,
+          filename: `proposal_${data.id}_report.pdf`,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2 },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        })
+        .from(tempContainer)
+        .save();
+    } catch (error) {
+      console.error('Failed to export PDF', error);
+      alert('Failed to export PDF. Please try again.');
+    } finally {
+      tempContainer.remove();
+    }
+
     this.#render();
   }
 
@@ -3453,6 +3529,9 @@ ${linuxVerifyFromEncode}</pre>
                   </button>
                   <button class="btn secondary" @click=${() => this.#handleExportMarkdown()}>
                     Download Markdown
+                  </button>
+                  <button class="btn secondary" @click=${() => this.#handleExportPdf()}>
+                    Download PDF
                   </button>
                   <button
                     class="btn secondary"
