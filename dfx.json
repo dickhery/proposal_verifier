@@ -3,8 +3,9 @@
     "proposal_verifier_backend": {
       "main": "src/proposal_verifier_backend/main.mo",
       "type": "motoko",
+      "args": "--incremental-gc",
       "settings": {
-        "reserved_cycles_limit": "50000000000000"  
+        "reserved_cycles_limit": "100000000000000"
       }
     },
     "proposal_verifier_frontend": {
