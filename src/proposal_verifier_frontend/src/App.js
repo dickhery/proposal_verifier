@@ -2919,10 +2919,15 @@ ${linuxVerifyFromEncode}</pre>
       data.reportHeaderDefaults,
       data.reportNotes,
     );
+    const commitStatusMarkdown = data.commitStatus
+      ? data.commitUrl
+        ? `[${data.commitStatus}](${data.commitUrl})`
+        : data.commitStatus
+      : 'N/A';
     let md = headerText ? `${headerText}\n\n---\n\n` : '';
     md += `# Proposal ${data.id} Verification Report\n\n`;
     md += `## Details\n- **Type**: ${data.type}\n- **Title**: ${data.title || 'N/A'}\n- **URL**: ${data.url}\n- **Summary**: \n${data.summary}\n\n`;
-    md += `## Extracted Info\n- **Repo**: ${data.extractedRepo || 'N/A'}\n- **Commit**: ${data.extractedCommit || 'N/A'} (${data.commitUrl || ''})\n- **Commit Status**: ${data.commitStatus || 'N/A'}\n\n`;
+    md += `## Extracted Info\n- **Repo**: ${data.extractedRepo || 'N/A'}\n- **Commit**: ${data.extractedCommit || 'N/A'} (${data.commitUrl || ''})\n- **Commit Status**: ${commitStatusMarkdown}\n\n`;
     md += `## Hashes\n- **Onchain WASM**: ${data.onchainWasmHash || 'N/A'}\n- **Onchain Arg**: ${data.onchainArgHash || 'N/A'}\n- **Expected**: ${data.expectedHash || 'N/A'} (source: ${data.expectedHashSource || 'N/A'})\n- **Arg Match**: ${data.argMatch ? '✅' : '❌'}\n\n`;
     md += `## Dashboard\n- **URL**: ${data.dashboardUrl}\n- **Snippet**: \n${data.payloadSnippet || 'N/A'}\n\n`;
     const docExpectationLabel = this.#formatDocExpectationLabel();
@@ -3249,10 +3254,11 @@ ${linuxVerifyFromEncode}</pre>
 
                 <p>
                   <b>Commit Status:</b>
-                  ${this.commitStatus}
-                  ${p.commitUrl
-                    ? html`&nbsp;(<a href="${p.commitUrl}" target="_blank" rel="noreferrer noopener">open</a>)`
-                    : ''}
+                  ${p.commitUrl && this.commitStatus
+                    ? html`&nbsp;<a href="${p.commitUrl}" target="_blank" rel="noreferrer noopener"
+                        >${this.commitStatus}</a
+                      >`
+                    : html`&nbsp;${this.commitStatus}`}
                 </p>
 
                 ${this.dashboardUrl
