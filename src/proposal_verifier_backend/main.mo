@@ -198,6 +198,13 @@ persistent actor verifier {
   // NNS subnet is currently 13; if that ever changes we can make this value
   // configurable via an upgrade.
   let HTTP_OUTCALL_REPLICA_COUNT : Nat = 13;
+
+  // Legacy constant retained as a stable variable for upgrade compatibility
+  // with pre-v3 deployments.  The new budgeting system ignores this value, but
+  // we persist it so the stable memory layout remains unchanged.  Once all
+  // production canisters migrate through a version that preserves the field we
+  // can drop it via a dedicated upgrade path.
+  stable var HTTP_OUTCALL_CYCLES : Nat = 1_000_000_000;
   let HTTP_OUTCALL_BASE_REQUEST_FEE : Nat = 3_000_000;
   let HTTP_OUTCALL_CONSENSUS_FEE_PER_NODE : Nat = 60_000;
   let HTTP_OUTCALL_REQUEST_BYTE_FEE : Nat = 400;
