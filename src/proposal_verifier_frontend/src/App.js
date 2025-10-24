@@ -3000,26 +3000,46 @@ ${linuxVerifyFromEncode}</pre>
       return;
     }
 
+    const sanitizedHtml = DOMPurify.sanitize(
+      marked.parse(md, { mangle: false, headerIds: false }),
+    );
+    if (!sanitizedHtml) {
+      alert('Unable to prepare report content.');
+      return;
+    }
+
     const tempContainer = document.createElement('div');
     tempContainer.style.position = 'fixed';
-    tempContainer.style.left = '-9999px';
+    tempContainer.style.left = '0';
     tempContainer.style.top = '0';
-    tempContainer.style.width = '800px';
+    tempContainer.style.width = '210mm';
+    tempContainer.style.maxWidth = '210mm';
+    tempContainer.style.padding = '20px';
+    tempContainer.style.background = '#ffffff';
+    tempContainer.style.color = '#000000';
+    tempContainer.style.fontFamily =
+      "'Inter', 'Helvetica Neue', Arial, sans-serif";
+    tempContainer.style.lineHeight = '1.4';
+    tempContainer.style.visibility = 'hidden';
     tempContainer.className = 'proposal-report-pdf-temp';
-    tempContainer.innerHTML = DOMPurify.sanitize(marked.parse(md));
+    tempContainer.innerHTML = sanitizedHtml;
+
+    tempContainer.querySelectorAll('pre, code').forEach((node) => {
+      node.style.whiteSpace = 'pre-wrap';
+      node.style.wordBreak = 'break-word';
+    });
+
     document.body.appendChild(tempContainer);
 
     try {
-      await html2pdf()
-        .set({
-          margin: 10,
-          filename: `proposal_${data.id}_report.pdf`,
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2 },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        })
-        .from(tempContainer)
-        .save();
+      const worker = html2pdf().set({
+        margin: 10,
+        filename: `proposal_${data.id}_report.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      });
+      await worker.from(tempContainer).save();
     } catch (error) {
       console.error('Failed to export PDF', error);
       alert('Failed to export PDF. Please try again.');
