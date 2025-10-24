@@ -2927,6 +2927,101 @@ ${linuxVerifyFromEncode}</pre>
     return sections.join('\n\n');
   }
 
+  #buildReportHeaderDisplay(final, defaults = {}, notes = '') {
+    if (!final) return null;
+
+    const valueOrNA = (value) => {
+      if (value === null || value === undefined) return 'N/A';
+      const str = String(value).trim();
+      return str.length ? str : 'N/A';
+    };
+
+    const idValue = valueOrNA(final.proposalId);
+    const idDisplay = idValue === 'N/A' ? 'N/A' : `#${idValue}`;
+    const title = valueOrNA(final.proposalTitle);
+    const category = valueOrNA(final.proposalCategory);
+    const action = valueOrNA(final.proposalAction);
+    const targetId = valueOrNA(final.targetCanisterId);
+    const targetName = valueOrNA(final.targetCanisterName);
+    const controllers = valueOrNA(final.controllers);
+    const subnet = valueOrNA(final.subnetId);
+    const repo = valueOrNA(final.sourceRepository);
+    const commitValue = valueOrNA(final.sourceCommit);
+    const wasmHash = valueOrNA(final.wasmHash);
+    const argType = valueOrNA(final.argumentType);
+    const argValue = valueOrNA(final.argumentValue);
+    const proposer = valueOrNA(final.proposer);
+    const verificationDate = valueOrNA(final.verificationDate);
+    const verifiedBy = valueOrNA(final.verifiedBy);
+    const generatedBy = valueOrNA(final.generatedBy);
+    const linkNnsValue = valueOrNA(final.linkNns);
+    const linkDashboardValue = valueOrNA(final.linkDashboard);
+
+    const commitUrl = defaults?.sourceCommitUrl;
+    const commitDisplay = commitValue;
+
+    const typeSegments = ['Governance'];
+    if (category !== 'N/A') typeSegments.push(category);
+    if (action !== 'N/A') typeSegments.push(action);
+    const typeDisplay = typeSegments.join(' → ');
+
+    let targetDisplay = 'N/A';
+    if (targetId !== 'N/A' && targetName !== 'N/A') {
+      targetDisplay = `${targetId} - ${targetName}`;
+    } else if (targetId !== 'N/A') {
+      targetDisplay = targetId;
+    } else if (targetName !== 'N/A') {
+      targetDisplay = targetName;
+    }
+
+    const metadata = [
+      { label: 'Proposal Type', value: typeDisplay },
+      { label: 'Target Canister', value: targetDisplay },
+      { label: 'Controllers', value: controllers },
+      { label: 'Subnet ID', value: subnet },
+      { label: 'Source Repository', value: repo },
+      {
+        label: 'Source Commit',
+        value: commitDisplay,
+        link: commitUrl && commitValue !== 'N/A' ? commitUrl : undefined,
+      },
+      { label: 'Proposed Wasm (gz) SHA-256', value: wasmHash },
+    ];
+
+    const argument = {
+      label: 'Argument Payload',
+      type: argType !== 'N/A' ? argType : '',
+      value: argValue,
+    };
+
+    const summary = {
+      proposer,
+      verificationDate,
+      verifiedBy,
+      generatedBy,
+      links: {
+        nns: linkNnsValue,
+        dashboard: linkDashboardValue,
+      },
+    };
+
+    const notesTrimmed = typeof notes === 'string' ? notes.trim() : '';
+    const notesLines = notesTrimmed
+      ? notesTrimmed
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length)
+      : [];
+
+    return {
+      title: `Proposal Verification Report - ${idDisplay} (${title})`,
+      metadata,
+      argument,
+      summary,
+      notes: notesLines,
+    };
+  }
+
   #updateReportOverride(key, value) {
     const next = { ...this.reportOverrides };
     if (typeof value === 'string' && value.length) {
@@ -3221,34 +3316,383 @@ ${linuxVerifyFromEncode}</pre>
       return;
     }
 
-    const plainText = this.#buildPlainTextReport(data);
-    if (!plainText.trim()) {
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const rendered = this.#renderStyledPdfReport(doc, data);
+
+    if (!rendered) {
       alert('Unable to generate the PDF report.');
       return;
-    }
-
-    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-    const margin = 40;
-    const lineHeight = 14;
-    const maxWidth = doc.internal.pageSize.getWidth() - margin * 2;
-    const bottom = doc.internal.pageSize.getHeight() - margin;
-    const lines = doc.splitTextToSize(plainText, maxWidth);
-    let y = margin;
-
-    for (const line of lines) {
-      if (y > bottom) {
-        doc.addPage();
-        y = margin;
-      }
-      if (line.trim().length) {
-        doc.text(line, margin, y);
-      }
-      y += lineHeight;
     }
 
     const filename = `proposal_${data.id}_report.pdf`;
     doc.save(filename);
     this.#render();
+  }
+
+  #renderStyledPdfReport(doc, data) {
+    if (!doc || !data) return false;
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 48;
+    const contentWidth = pageWidth - margin * 2;
+    const defaultLineHeight = 16;
+    let cursorY = margin;
+
+    const ensureValue = (value, fallback = 'N/A') => {
+      if (value === null || value === undefined) return fallback;
+      const str = String(value).trim();
+      return str.length ? str : fallback;
+    };
+
+    const ensureSpace = (needed = defaultLineHeight) => {
+      if (cursorY + needed > pageHeight - margin) {
+        doc.addPage();
+        cursorY = margin;
+      }
+    };
+
+    const addSpacer = (amount = 10) => {
+      ensureSpace(amount);
+      cursorY += amount;
+    };
+
+    const addTitle = (text) => {
+      if (!text) return;
+      ensureSpace(28);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.setTextColor(17, 24, 39);
+      doc.text(text, margin, cursorY);
+      cursorY += 28;
+    };
+
+    const addSectionHeading = (text) => {
+      if (!text) return;
+      ensureSpace(24);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(30, 41, 59);
+      doc.text(text, margin, cursorY);
+      cursorY += 14;
+      doc.setDrawColor(220, 220, 220);
+      doc.setLineWidth(0.5);
+      doc.line(margin, cursorY + 4, margin + contentWidth, cursorY + 4);
+      cursorY += 12;
+    };
+
+    const addParagraph = (text, { indent = 0, fontSize = 11, fontStyle = 'normal', lineHeight = defaultLineHeight, color = [55, 65, 81] } = {}) => {
+      const trimmed = typeof text === 'string' ? text.trim() : '';
+      if (!trimmed.length) return;
+      doc.setFont('helvetica', fontStyle);
+      doc.setFontSize(fontSize);
+      doc.setTextColor(...color);
+      const lines = doc.splitTextToSize(trimmed, contentWidth - indent);
+      for (const line of lines) {
+        ensureSpace(lineHeight);
+        doc.text(line, margin + indent, cursorY);
+        cursorY += lineHeight;
+      }
+      cursorY += 4;
+    };
+
+    const addKeyValue = (
+      label,
+      value,
+      {
+        indent = 0,
+        bullet = false,
+        lineHeight = defaultLineHeight,
+        link,
+        prefixIcon,
+        after = 6,
+        showPlaceholder = true,
+      } = {},
+    ) => {
+      const rawValue = value;
+      const safeValue = ensureValue(value);
+      const labelPrefix = bullet ? '• ' : '';
+      const labelText = `${labelPrefix}${label}:`;
+
+      ensureSpace(lineHeight);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(30, 41, 59);
+      const labelX = margin + indent;
+      doc.text(labelText, labelX, cursorY);
+
+      const labelWidth = doc.getTextWidth(`${labelText} `);
+      const hasContent =
+        rawValue !== null &&
+        rawValue !== undefined &&
+        !(typeof rawValue === 'string' && rawValue.trim().length === 0);
+
+      let valueText = safeValue;
+      if (prefixIcon) {
+        valueText = `${prefixIcon} ${safeValue}`;
+      }
+
+      if (!showPlaceholder && !hasContent) {
+        valueText = '';
+      }
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      doc.setTextColor(55, 65, 81);
+
+      const lines = valueText
+        ? doc.splitTextToSize(valueText, Math.max(contentWidth - indent - labelWidth, contentWidth * 0.4))
+        : [];
+      let currentY = cursorY;
+      const firstLine = lines.shift();
+      if (firstLine) {
+        if (link && safeValue !== 'N/A') {
+          doc.textWithLink(firstLine, labelX + labelWidth, currentY, { url: link });
+        } else {
+          doc.text(firstLine, labelX + labelWidth, currentY);
+        }
+      }
+
+      for (const line of lines) {
+        currentY += lineHeight;
+        if (currentY > pageHeight - margin) {
+          doc.addPage();
+          currentY = margin;
+        }
+        doc.text(line, margin + indent + (bullet ? 16 : 12), currentY);
+      }
+
+      cursorY = currentY + after;
+    };
+
+    const addBulletList = (items = [], options = {}) => {
+      for (const item of items) {
+        if (!item) continue;
+        addKeyValue(item.label, item.value, { ...options, ...item.options, bullet: true });
+      }
+    };
+
+    const addCodeBlock = (text, { indent = 0, title } = {}) => {
+      const safeText = ensureValue(text, '').trim();
+      const hasContent = safeText.length > 0;
+      const lines = hasContent
+        ? doc.splitTextToSize(safeText, contentWidth - indent - 16)
+        : ['N/A'];
+      const blockHeight = lines.length * 14 + 16;
+
+      if (title) {
+        addKeyValue(title, '', { indent, bullet: false, after: 0, showPlaceholder: false });
+        addSpacer(4);
+      }
+
+      ensureSpace(blockHeight + 4);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin + indent, cursorY, contentWidth - indent, blockHeight, 4, 4, 'F');
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(51, 65, 85);
+
+      let textY = cursorY + 16;
+      for (const line of lines) {
+        if (textY > pageHeight - margin) {
+          doc.addPage();
+          textY = margin + 16;
+        }
+        doc.text(line, margin + indent + 8, textY);
+        textY += 14;
+      }
+
+      cursorY = textY + 6;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      doc.setTextColor(55, 65, 81);
+    };
+
+    const headerDisplay = this.#buildReportHeaderDisplay(
+      data.reportHeader,
+      data.reportHeaderDefaults,
+      data.reportNotes,
+    );
+
+    if (headerDisplay) {
+      addTitle(headerDisplay.title);
+      addSpacer(4);
+      addBulletList(headerDisplay.metadata.map((entry) => ({
+        label: entry.label,
+        value: entry.value,
+        options: { link: entry.link },
+      })));
+
+      if (headerDisplay.argument) {
+        const arg = headerDisplay.argument;
+        const heading = arg.type ? `${arg.label} (${arg.type})` : arg.label;
+        addCodeBlock(arg.value, { title: heading });
+      }
+
+      const summaryItems = [
+        { label: 'Proposer', value: headerDisplay.summary.proposer },
+        { label: 'Verification Date', value: headerDisplay.summary.verificationDate },
+        { label: 'Verified by', value: headerDisplay.summary.verifiedBy },
+        { label: 'Generated by', value: headerDisplay.summary.generatedBy },
+      ];
+
+      addBulletList(summaryItems);
+
+      const links = headerDisplay.summary.links || {};
+      const linkItems = [];
+      if (links.nns && links.nns !== 'N/A') {
+        linkItems.push({ label: 'NNS dapp view', value: links.nns, options: { link: links.nns } });
+      }
+      if (links.dashboard && links.dashboard !== 'N/A') {
+        linkItems.push({ label: 'ICP Dashboard record', value: links.dashboard, options: { link: links.dashboard } });
+      }
+      if (linkItems.length) {
+        addKeyValue('Links', '', { after: 0, showPlaceholder: false });
+        addSpacer(4);
+        addBulletList(linkItems, { indent: 12 });
+      }
+
+      if (headerDisplay.notes?.length) {
+        addKeyValue('Reviewer Notes', '', { after: 0, showPlaceholder: false });
+        addSpacer(4);
+        for (const noteLine of headerDisplay.notes) {
+          addParagraph(noteLine, { indent: 16, fontStyle: 'italic' });
+        }
+      }
+
+      addSpacer(4);
+    } else {
+      addTitle(`Proposal ${ensureValue(data.id)} Verification Report`);
+    }
+
+    addSectionHeading(`Proposal ${ensureValue(data.id)} Verification Report`);
+
+    const detailsItems = [
+      { label: 'Type', value: ensureValue(data.type) },
+      { label: 'Title', value: ensureValue(data.title) },
+      { label: 'URL', value: ensureValue(data.url), options: { link: data.url } },
+      { label: 'Summary', value: ensureValue(data.summary) },
+    ];
+    addBulletList(detailsItems);
+
+    addSectionHeading('Extracted Info');
+    const commitDisplay = data.commitUrl
+      ? `${ensureValue(data.extractedCommit)} (${data.commitUrl})`
+      : ensureValue(data.extractedCommit);
+    const extractedItems = [
+      { label: 'Repo', value: ensureValue(data.extractedRepo) },
+      {
+        label: 'Commit',
+        value: commitDisplay,
+        options: { link: data.commitUrl },
+      },
+      {
+        label: 'Commit Status',
+        value: ensureValue(data.commitStatus),
+      },
+    ];
+    addBulletList(extractedItems);
+
+    addSectionHeading('Hashes');
+    const hashItems = [
+      { label: 'Onchain WASM', value: ensureValue(data.onchainWasmHash) },
+      { label: 'Onchain Arg', value: ensureValue(data.onchainArgHash) },
+      {
+        label: 'Expected',
+        value: `${ensureValue(data.expectedHash)} (source: ${ensureValue(data.expectedHashSource)})`,
+      },
+      {
+        label: 'Arg Match',
+        value: data.argMatch ? 'Match confirmed' : 'Mismatch',
+        options: { prefixIcon: data.argMatch ? '✅' : '❌' },
+      },
+    ];
+    addBulletList(hashItems);
+
+    addSectionHeading('Dashboard');
+    addBulletList([
+      { label: 'URL', value: ensureValue(data.dashboardUrl), options: { link: data.dashboardUrl } },
+    ]);
+    addCodeBlock(ensureValue(data.payloadSnippetRaw || data.payloadSnippet), {
+      indent: 12,
+    });
+
+    addSectionHeading('Documents');
+    const docExpectationLabel = this.#formatDocExpectationLabel();
+    addBulletList([
+      { label: 'Expectation', value: ensureValue(docExpectationLabel) },
+    ]);
+
+    const docs = Array.isArray(data.extractedDocs) ? data.extractedDocs : [];
+    if (docs.length) {
+      addKeyValue('Provided Documents', '', { after: 0, showPlaceholder: false });
+      addSpacer(4);
+      docs.forEach((docItem) => {
+        const name = ensureValue(docItem?.name);
+        const hash = ensureValue(docItem?.hash);
+        addParagraph(`${name}: ${hash}`, { indent: 18 });
+      });
+    } else {
+      addParagraph('None provided', { indent: 12, fontStyle: 'italic' });
+    }
+
+    const docResults = Array.isArray(data.docResults) ? data.docResults : [];
+    if (docResults.length) {
+      addKeyValue('Verification Results', '', { after: 0, showPlaceholder: false });
+      addSpacer(4);
+      docResults.forEach((result, idx) => {
+        const source = docs[idx] || {};
+        const name = ensureValue(source?.name || result?.name);
+        const match =
+          result?.match === true ? 'Match' : result?.match === false ? 'No Match' : 'Unknown';
+        const icon = result?.match === true ? '✅' : result?.match === false ? '❌' : 'ℹ️';
+        const error = result?.error ? ` (Error: ${result.error})` : '';
+        addParagraph(`${icon} ${name}: ${match}${error}`, { indent: 18 });
+      });
+    }
+
+    const urlLines = (Array.isArray(data.extractedUrls) ? data.extractedUrls : [])
+      .filter((url) => typeof url === 'string' && url.trim().length)
+      .map((url) => url.trim());
+    if (urlLines.length) {
+      addSectionHeading('Extracted URLs');
+      urlLines.forEach((url) => {
+        addParagraph(`• ${url}`, { indent: 12, color: [30, 64, 175] });
+      });
+    }
+
+    addSectionHeading('Checklist');
+    const checklistEntries = Object.entries(data.checklist || {}).filter(([key]) => key !== 'manual');
+    if (checklistEntries.length) {
+      checklistEntries.forEach(([key, value]) => {
+        if (key === 'docHash' && this.docExpectation === 'not_applicable') {
+          addParagraph(`• ${key}: N/A`, { indent: 12 });
+        } else {
+          const icon = value ? '✅' : '❌';
+          const label = value ? 'Completed' : 'Incomplete';
+          addParagraph(`• ${key}: ${icon} ${label}`, { indent: 12 });
+        }
+      });
+    } else {
+      addParagraph('No checklist items recorded.', { indent: 12, fontStyle: 'italic' });
+    }
+
+    addSectionHeading('Steps & Tools');
+    addKeyValue('Verification Steps', ensureValue(data.verificationSteps), { bullet: true });
+    addKeyValue('Required Tools', ensureValue(data.requiredTools), { bullet: true });
+
+    addSectionHeading('Rebuild Script');
+    addCodeBlock(ensureValue(data.rebuildScript));
+
+    if (data.lastFetchCyclesBurned) {
+      addParagraph(`Last fetch cycles burned: ${ensureValue(data.lastFetchCyclesBurned)}`, {
+        indent: 4,
+        fontStyle: 'italic',
+      });
+    }
+
+    return true;
   }
 
   // NEW: Export full metadata as plain text (Candid-like)
