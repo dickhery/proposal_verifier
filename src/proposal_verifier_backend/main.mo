@@ -1997,7 +1997,7 @@ persistent actor verifier {
               case null {};
             };
             if (resp.status == 200) {
-              if (!(offset == 0 and chunkCap == total)) {
+              if (not (offset == 0 and chunkCap == total)) {
                 return #err("Document server did not honor ranged request; please download directly in your browser.");
               };
               let bodyArray = Blob.toArray(resp.body);
