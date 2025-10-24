@@ -228,11 +228,10 @@ persistent actor verifier {
   let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
 
   // Legacy conversion rate fields kept for stable compatibility with pre-v2 canisters.
-  // The verifier no longer relies on cached CMC responses, but the historical
-  // deployment stored these values in stable memory.  Reintroducing them here
-  // allows upgrades to proceed without data loss while `postupgrade` clears the
-  // stale state so future releases can safely remove them after a two-step
-  // migration.
+  // The verifier no longer relies on cached CMC responses, but earlier builds
+  // stored snapshots in stable memory.  The `legacyRatesSnapshot` bridge lets us
+  // migrate or discard that data explicitly during upgrade without tripping the
+  // stable memory checker.
   type LegacyCmcConversion = {
     timestamp_seconds : Nat64;
     xdr_permyriad_per_icp : Nat64;
@@ -249,6 +248,16 @@ persistent actor verifier {
   stable var MARGIN_BPS : Nat = 0;
   stable var last_rate_timestamp_seconds : Nat64 = 0;
   stable var last_xdr_permyriad_per_icp : Nat64 = 0;
+
+  type LegacyRateSnapshot = {
+    cmc : LegacyCmcActor;
+    cyclesPerXdr : Nat;
+    marginBps : Nat;
+    lastRateTimestampSeconds : Nat64;
+    lastXdrPermyriadPerIcp : Nat64;
+  };
+
+  stable var legacyRatesSnapshot : ?LegacyRateSnapshot = null;
 
   // Very small, persistent balance map (Principal -> e8s).
   // Simple array-based storage to keep stability trivial.
@@ -2096,15 +2105,28 @@ persistent actor verifier {
     };
   };
 
-  system func preupgrade() {};
+  system func preupgrade() {
+    legacyRatesSnapshot := ?{
+      cmc = CMC;
+      cyclesPerXdr = CYCLES_PER_XDR;
+      marginBps = MARGIN_BPS;
+      lastRateTimestampSeconds = last_rate_timestamp_seconds;
+      lastXdrPermyriadPerIcp = last_xdr_permyriad_per_icp;
+    };
+  };
 
   system func postupgrade() {
-    // Reset any cached rate data so the backend fetches fresh values after upgrade.
-    CMC := DEFAULT_CMC;
-    CYCLES_PER_XDR := 0;
-    MARGIN_BPS := 0;
-    last_rate_timestamp_seconds := 0;
-    last_xdr_permyriad_per_icp := 0;
+    switch (legacyRatesSnapshot) {
+      case (?snapshot) {
+        CMC := snapshot.cmc;
+        CYCLES_PER_XDR := snapshot.cyclesPerXdr;
+        MARGIN_BPS := snapshot.marginBps;
+        last_rate_timestamp_seconds := snapshot.lastRateTimestampSeconds;
+        last_xdr_permyriad_per_icp := snapshot.lastXdrPermyriadPerIcp;
+      };
+      case null {};
+    };
+    legacyRatesSnapshot := null;
   };
 
   // -----------------------------
