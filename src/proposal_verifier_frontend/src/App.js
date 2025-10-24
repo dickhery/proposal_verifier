@@ -3009,8 +3009,8 @@ ${linuxVerifyFromEncode}</pre>
     }
 
     const tempContainer = document.createElement('div');
-    tempContainer.style.position = 'fixed';
-    tempContainer.style.left = '0';
+    tempContainer.style.position = 'absolute';
+    tempContainer.style.left = '-10000px';
     tempContainer.style.top = '0';
     tempContainer.style.width = '210mm';
     tempContainer.style.maxWidth = '210mm';
@@ -3020,7 +3020,7 @@ ${linuxVerifyFromEncode}</pre>
     tempContainer.style.fontFamily =
       "'Inter', 'Helvetica Neue', Arial, sans-serif";
     tempContainer.style.lineHeight = '1.4';
-    tempContainer.style.visibility = 'hidden';
+    tempContainer.style.visibility = 'visible';
     tempContainer.className = 'proposal-report-pdf-temp';
     tempContainer.innerHTML = sanitizedHtml;
 
