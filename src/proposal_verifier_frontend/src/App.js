@@ -3442,7 +3442,10 @@ ${linuxVerifyFromEncode}</pre>
       doc.setTextColor(55, 65, 81);
 
       const lines = valueText
-        ? doc.splitTextToSize(valueText, Math.max(contentWidth - indent - labelWidth, contentWidth * 0.4))
+        ? doc.splitTextToSize(
+            valueText,
+            Math.max(contentWidth - indent - labelWidth, contentWidth * 0.4),
+          )
         : [];
       let currentY = cursorY;
       const firstLine = lines.shift();
@@ -3452,15 +3455,18 @@ ${linuxVerifyFromEncode}</pre>
         } else {
           doc.text(firstLine, labelX + labelWidth, currentY);
         }
+        currentY += lineHeight;
+      } else {
+        currentY += lineHeight;
       }
 
       for (const line of lines) {
-        currentY += lineHeight;
         if (currentY > pageHeight - margin) {
           doc.addPage();
           currentY = margin;
         }
         doc.text(line, margin + indent + (bullet ? 16 : 12), currentY);
+        currentY += lineHeight;
       }
 
       cursorY = currentY + after;
