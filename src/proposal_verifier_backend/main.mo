@@ -1319,7 +1319,7 @@ persistent actor verifier {
     };
     total += 2; // trailing CRLF before body
     switch (req.body) {
-      case (?b) { total += Blob.size(b) };
+      case (?b) { total += Array.size<Nat8>(Blob.toArray(b)) };
       case null {};
     };
     total;
@@ -1343,9 +1343,8 @@ persistent actor verifier {
     var attempt : Nat = 0;
     label attemptLoop while (attempt < HTTP_OUTCALL_MAX_ATTEMPTS) {
       attempt += 1;
-      Cycles.add<system>(cycles);
       try {
-        let resp = await Management.http_request(req);
+        let resp = await (with cycles = cycles) Management.http_request(req);
         return #ok(resp);
       } catch (e) {
         let message = Error.message(e);
