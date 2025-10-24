@@ -220,9 +220,9 @@ persistent actor verifier {
   // in production).  Keeping these tight dramatically reduces the cycles we
   // must escrow up-front for each HTTPS outcall.
   let MAX_RESPONSE_BYTES_GENERIC_TEXT : Nat64 = 512_000; // HTML / checksum files
-  let MAX_RESPONSE_BYTES_GITHUB_COMMIT : Nat64 = 400_000;
-  let MAX_RESPONSE_BYTES_IC_API_JSON : Nat64 = 400_000;
-  let MAX_RESPONSE_BYTES_FETCH_DOCUMENT : Nat64 = 1_500_000;
+  let MAX_RESPONSE_BYTES_GITHUB_COMMIT : Nat64 = 200_000;
+  let MAX_RESPONSE_BYTES_IC_API_JSON : Nat64 = 300_000;
+  let MAX_RESPONSE_BYTES_FETCH_DOCUMENT : Nat64 = 1_000_000;
 
   // Minimum cycles balance required before billing/fetching to avoid failed calls after charging users
   let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
@@ -249,16 +249,6 @@ persistent actor verifier {
   stable var MARGIN_BPS : Nat = 0;
   stable var last_rate_timestamp_seconds : Nat64 = 0;
   stable var last_xdr_permyriad_per_icp : Nat64 = 0;
-
-  type LegacyRateSnapshot = {
-    cmc : LegacyCmcActor;
-    cyclesPerXdr : Nat;
-    marginBps : Nat;
-    lastRateTimestampSeconds : Nat64;
-    lastXdrPermyriadPerIcp : Nat64;
-  };
-
-  stable var legacyRatesSnapshot : ?LegacyRateSnapshot = null;
 
   // Very small, persistent balance map (Principal -> e8s).
   // Simple array-based storage to keep stability trivial.
@@ -367,6 +357,23 @@ persistent actor verifier {
   // ---- Track the last observed ledger balance per user (for delta detection) ----
   stable var creditedByUser : [(Principal, Nat64)] = [];
 
+  let MAX_TRACKED_PRINCIPALS : Nat = 1024;
+
+  func compactPrincipalArray(list : [(Principal, Nat64)]) : [(Principal, Nat64)] {
+    let filtered = Buffer.Buffer<(Principal, Nat64)>(Array.size(list));
+    for (entry in list.vals()) {
+      if (entry.1 != 0) {
+        filtered.add(entry);
+      };
+    };
+    var trimmed = Buffer.toArray(filtered);
+    if (Array.size(trimmed) > MAX_TRACKED_PRINCIPALS) {
+      let drop = Array.size(trimmed) - MAX_TRACKED_PRINCIPALS;
+      trimmed := Array.subArray(trimmed, drop, MAX_TRACKED_PRINCIPALS);
+    };
+    trimmed;
+  };
+
   func getCredited(p : Principal) : Nat64 {
     for (pair in creditedByUser.vals()) { if (pair.0 == p) return pair.1 };
     0;
@@ -376,10 +383,17 @@ persistent actor verifier {
     let buf = Buffer.Buffer<(Principal, Nat64)>(Array.size(creditedByUser));
     var found = false;
     for (pair in creditedByUser.vals()) {
-      if (pair.0 == p) { buf.add((p, v)); found := true } else { buf.add(pair) };
+      if (pair.0 == p) {
+        found := true;
+        if (v != 0) {
+          buf.add((p, v));
+        };
+      } else {
+        buf.add(pair);
+      };
     };
-    if (not found) { buf.add((p, v)) };
-    creditedByUser := Buffer.toArray(buf);
+    if (not found and v != 0) { buf.add((p, v)) };
+    creditedByUser := compactPrincipalArray(Buffer.toArray(buf));
   };
 
   func pruneIcApiCache(now : Time.Time) {
@@ -514,14 +528,16 @@ persistent actor verifier {
     var found = false;
     for (pair in balances.vals()) {
       if (pair.0 == p) {
-        buf.add((p, newBal));
         found := true;
+        if (newBal != 0) {
+          buf.add((p, newBal));
+        };
       } else {
         buf.add(pair);
       };
     };
-    if (not found) { buf.add((p, newBal)) };
-    balances := Buffer.toArray(buf);
+    if (not found and newBal != 0) { buf.add((p, newBal)) };
+    balances := compactPrincipalArray(Buffer.toArray(buf));
   };
 
   func addBalanceInternal(p : Principal, delta : Nat64) {
@@ -2080,22 +2096,10 @@ persistent actor verifier {
     };
   };
 
-  system func preupgrade() {
-    legacyRatesSnapshot := ?{
-      cmc = CMC;
-      cyclesPerXdr = CYCLES_PER_XDR;
-      marginBps = MARGIN_BPS;
-      lastRateTimestampSeconds = last_rate_timestamp_seconds;
-      lastXdrPermyriadPerIcp = last_xdr_permyriad_per_icp;
-    };
-  };
+  system func preupgrade() {};
 
   system func postupgrade() {
-    // Clear the legacy rate cache because newer releases fetch deterministic
-    // pricing. Keeping the snapshot around makes it available for any future
-    // manual migration logic while ensuring subsequent upgrades can safely
-    // ignore the legacy cells.
-    legacyRatesSnapshot := null;
+    // Reset any cached rate data so the backend fetches fresh values after upgrade.
     CMC := DEFAULT_CMC;
     CYCLES_PER_XDR := 0;
     MARGIN_BPS := 0;
