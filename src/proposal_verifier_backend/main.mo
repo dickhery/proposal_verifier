@@ -214,15 +214,18 @@ persistent actor verifier {
   let HTTP_OUTCALL_MAX_ATTEMPTS : Nat = 2;
   let HTTP_OUTCALL_RETRY_BUFFER_MIN : Nat = 100_000_000;
   let HTTP_OUTCALL_RETRY_BUFFER_PERCENT : Nat = 10;
-  let HTTP_OUTCALL_DEFAULT_MAX_RESPONSE_BYTES : Nat = 2_000_000;
 
-  // Endpoint-specific response caps (chosen based on observed payload sizes
-  // in production).  Keeping these tight dramatically reduces the cycles we
-  // must escrow up-front for each HTTPS outcall.
-  let MAX_RESPONSE_BYTES_GENERIC_TEXT : Nat64 = 512_000; // HTML / checksum files
-  let MAX_RESPONSE_BYTES_GITHUB_COMMIT : Nat64 = 400_000;
-  let MAX_RESPONSE_BYTES_IC_API_JSON : Nat64 = 400_000;
-  let MAX_RESPONSE_BYTES_FETCH_DOCUMENT : Nat64 = 1_500_000;
+  // Endpoint-specific response caps (tightened based on observed payload sizes
+  // in production).  Narrowing these limits dramatically reduces the cycles we
+  // must escrow up-front for each HTTPS outcall while still leaving comfortable
+  // headroom above the largest responses we have seen in the field.
+  let MAX_RESPONSE_BYTES_GENERIC_TEXT : Nat64 = 196_608; // 192 KiB (HTML / checksum files)
+  let MAX_RESPONSE_BYTES_GITHUB_COMMIT : Nat64 = 131_072; // 128 KiB (GitHub commit JSON ~75 KiB max observed)
+  let MAX_RESPONSE_BYTES_IC_API_JSON : Nat64 = 262_144; // 256 KiB (dashboard proposal payloads ~200 KiB)
+  let MAX_RESPONSE_BYTES_FETCH_DOCUMENT : Nat64 = 524_288; // 512 KiB chunks for deterministic documents
+  let MAX_FETCH_DOCUMENT_TOTAL_BYTES : Nat64 = 3_145_728; // 3 MiB aggregate document ceiling
+
+  let HTTP_OUTCALL_DEFAULT_MAX_RESPONSE_BYTES : Nat = Nat64.toNat(MAX_RESPONSE_BYTES_FETCH_DOCUMENT);
 
   // Minimum cycles balance required before billing/fetching to avoid failed calls after charging users
   let MIN_CANISTER_CYCLE_BALANCE : Nat = 3_000_000_000_000;
@@ -811,6 +814,13 @@ persistent actor verifier {
     return null;
   };
 
+  func startsWith(text : Text, prefix : Text) : Bool {
+    switch (indexOf(text, prefix)) {
+      case (?0) true;
+      case _ false;
+    };
+  };
+
   func isWhitespace(c : Char) : Bool {
     let n = Char.toNat32(c);
     n == 32 or n == 10 or n == 13 or n == 9;
@@ -823,6 +833,66 @@ persistent actor verifier {
       i += 1;
     };
     i;
+  };
+
+  func findHeaderCaseInsensitive(headers : [HttpHeader], name : Text) : ?Text {
+    let target = Text.toLowercase(name);
+    for (header in headers.vals()) {
+      if (Text.toLowercase(header.name) == target) {
+        return ?header.value;
+      };
+    };
+    null;
+  };
+
+  func parseNat64(value : Text) : ?Nat64 {
+    switch (Nat.fromText(Text.trim(value, #char ' '))) {
+      case (?n) { ?Nat64.fromNat(n) };
+      case null { null };
+    };
+  };
+
+  func parseContentRange(value : Text) : ?(Nat64, Nat64, Nat64) {
+    let trimmed = Text.trim(value, #char ' ');
+    if (Text.size(trimmed) == 0) return null;
+    let lower = Text.toLowercase(trimmed);
+    if (not startsWith(lower, "bytes")) return null;
+    let spaceIdxOpt = indexOf(trimmed, " ");
+    let spaceIdx = switch (spaceIdxOpt) {
+      case (?idx) idx;
+      case null { return null };
+    };
+    let rangeWithTotal = Text.trim(textSlice(trimmed, spaceIdx + 1, Text.size(trimmed)), #char ' ');
+    let slashIdxOpt = indexOf(rangeWithTotal, "/");
+    let slashIdx = switch (slashIdxOpt) {
+      case (?idx) idx;
+      case null { return null };
+    };
+    let rangePart = Text.trim(textSlice(rangeWithTotal, 0, slashIdx), #char ' ');
+    let totalPart = Text.trim(textSlice(rangeWithTotal, slashIdx + 1, Text.size(rangeWithTotal)), #char ' ');
+    switch (parseNat64(totalPart)) {
+      case (?total) {
+        if (Text.equal(rangePart, "*")) return null;
+        let dashIdxOpt = indexOf(rangePart, "-");
+        let dashIdx = switch (dashIdxOpt) {
+          case (?idx) idx;
+          case null { return null };
+        };
+        let startText = Text.trim(textSlice(rangePart, 0, dashIdx), #char ' ');
+        let endText = Text.trim(textSlice(rangePart, dashIdx + 1, Text.size(rangePart)), #char ' ');
+        switch (parseNat64(startText), parseNat64(endText)) {
+          case (?start, ?finish) { ?(start, finish, total) };
+          case _ { null };
+        }
+      };
+      case null { null };
+    };
+  };
+
+  func appendBlob(buf : Buffer.Buffer<Nat8>, data : Blob) {
+    for (byte in Blob.toArray(data).vals()) {
+      buf.add(byte);
+    };
   };
 
   let CHAR_DOUBLE_QUOTE : Char = Char.fromNat32(34);
@@ -1346,29 +1416,32 @@ persistent actor verifier {
   };
 
   func httpRequestWithRetries(req : HttpRequestArgs) : async Result.Result<HttpResponsePayload, Text> {
-    var cycles : Nat = estimateHttpOutcallCycles(req);
     var attempt : Nat = 0;
+    var cyclesEstimate : Nat = estimateHttpOutcallCycles(req);
     label attemptLoop while (attempt < HTTP_OUTCALL_MAX_ATTEMPTS) {
       attempt += 1;
+      let allocation = cyclesEstimate;
       try {
-        let resp = await (with cycles = cycles) Management.http_request(req);
+        let resp = await (with cycles = allocation) Management.http_request(req);
         return #ok(resp);
       } catch (e) {
         let message = Error.message(e);
         if (attempt < HTTP_OUTCALL_MAX_ATTEMPTS) {
+          var nextEstimate : Nat = estimateHttpOutcallCycles(req);
           switch (extractLastNumberFromText(message)) {
             case (?required) {
-              if (required > cycles) {
+              if (required > nextEstimate) {
                 var extra : Nat = required / HTTP_OUTCALL_RETRY_BUFFER_PERCENT;
                 if (extra < HTTP_OUTCALL_RETRY_BUFFER_MIN) {
                   extra := HTTP_OUTCALL_RETRY_BUFFER_MIN;
                 };
-                cycles := required + extra;
-                continue attemptLoop;
+                nextEstimate := required + extra;
               };
             };
             case null {};
           };
+          cyclesEstimate := nextEstimate;
+          continue attemptLoop;
         };
         return #err("HTTPS outcall failed: " # message);
       };
@@ -1777,32 +1850,261 @@ persistent actor verifier {
       return #err("Domain likely dynamic / non-deterministic for canister outcalls; fetch in browser instead.");
     };
 
-    let request : HttpRequestArgs = {
-      url = url;
-      method = #get;
-      headers = [
-        { name = "User-Agent"; value = "proposal-verifier-canister" },
-        { name = "Accept-Encoding"; value = "identity" },
-      ];
-      body = null;
-      max_response_bytes = ?MAX_RESPONSE_BYTES_FETCH_DOCUMENT;
-      transform = ?{
-        function = {
-          principal = Principal.fromActor(verifier);
-          method_name = "generalTransform";
+    let chunkSize = MAX_RESPONSE_BYTES_FETCH_DOCUMENT;
+    if (chunkSize == 0) {
+      return #err("Document chunk size misconfigured; please contact support.");
+    };
+
+    let transformSpec : ?TransformContext = ?{
+      function = {
+        principal = Principal.fromActor(verifier);
+        method_name = "documentTransform";
+      };
+      context = Blob.fromArray([]);
+    };
+
+    func requestHeaders(range : ?(Nat64, Nat64)) : [HttpHeader] {
+      let base = Buffer.Buffer<HttpHeader>(if (range == null) 2 else 3);
+      base.add({ name = "User-Agent"; value = "proposal-verifier-canister" });
+      base.add({ name = "Accept-Encoding"; value = "identity" });
+      switch (range) {
+        case (?(start, finish)) {
+          base.add({ name = "Range"; value = "bytes=" # Nat64.toText(start) # "-" # Nat64.toText(finish) });
         };
-        context = Blob.fromArray([]);
+        case null {};
+      };
+      Buffer.toArray(base);
+    };
+
+    func buildHeadRequest() : HttpRequestArgs {
+      {
+        url = url;
+        method = #head;
+        headers = requestHeaders(null);
+        body = null;
+        max_response_bytes = ?MAX_RESPONSE_BYTES_GENERIC_TEXT;
+        transform = transformSpec;
       };
     };
-    switch (await httpRequestWithRetries(request)) {
-      case (#ok(response)) {
-        if (response.status == 200) {
-          #ok({ body = response.body; headers = response.headers });
-        } else {
-          #err("Fetch failed with status " # Nat.toText(response.status));
+
+    func buildGetRequest(range : ?(Nat64, Nat64), cap : Nat64) : HttpRequestArgs {
+      {
+        url = url;
+        method = #get;
+        headers = requestHeaders(range);
+        body = null;
+        max_response_bytes = ?cap;
+        transform = transformSpec;
+      };
+    };
+
+    func fetchSingle(maxBytes : Nat64, expectedLen : ?Nat64, contentTypeHint : ?Text) : async Result.Result<FetchResult, Text> {
+      let req = buildGetRequest(null, maxBytes);
+      switch (await httpRequestWithRetries(req)) {
+        case (#ok(resp)) {
+          if (resp.status != 200) {
+            return #err("Fetch failed with status " # Nat.toText(resp.status));
+          };
+          var contentType = contentTypeHint;
+          switch (findHeaderCaseInsensitive(resp.headers, "Content-Type")) {
+            case (?ct) { contentType := ?ct };
+            case null {};
+          };
+          let bytesArray = Blob.toArray(resp.body);
+          let chunkLenNat : Nat = Array.size(bytesArray);
+          let chunkLen64 : Nat64 = Nat64.fromNat(chunkLenNat);
+          if (chunkLen64 > MAX_FETCH_DOCUMENT_TOTAL_BYTES) {
+            return #err("Document exceeds deterministic fetch limit; please download it directly in your browser.");
+          };
+          let declaredLenOpt = switch (findHeaderCaseInsensitive(resp.headers, "Content-Length")) {
+            case (?value) parseNat64(value);
+            case null null;
+          };
+          switch (expectedLen) {
+            case (?expected) {
+              if (expected > MAX_FETCH_DOCUMENT_TOTAL_BYTES) {
+                return #err("Document exceeds deterministic fetch limit; please download it directly in your browser.");
+              };
+              if (chunkLenNat != Nat64.toNat(expected)) {
+                return #err("Unexpected document length; please download it directly in your browser.");
+              };
+            };
+            case null {};
+          };
+          switch (declaredLenOpt) {
+            case (?declared) {
+              if (declared > maxBytes) {
+                return #err("Document exceeds deterministic fetch limit; please download it directly in your browser.");
+              };
+              let declaredNat = Nat64.toNat(declared);
+              if (declaredNat != chunkLenNat) {
+                if (declaredNat > chunkLenNat) {
+                  return #err("Document response truncated; please download it directly in your browser.");
+                } else {
+                  return #err("Document response length mismatch; please download it directly in your browser.");
+                };
+              };
+            };
+            case null {
+              if (expectedLen == null) {
+                if (chunkLenNat == Nat64.toNat(maxBytes) and maxBytes == chunkSize) {
+                  return #err("Unable to determine document length; please download it directly in your browser.");
+                };
+              };
+            };
+          };
+          let buffer = Buffer.Buffer<Nat8>(chunkLenNat);
+          appendBlob(buffer, resp.body);
+          let finalLength : Nat64 = switch (expectedLen) {
+            case (?expected) expected;
+            case null {
+              switch (declaredLenOpt) {
+                case (?declared) declared;
+                case null chunkLen64;
+              }
+            };
+          };
+          let headerBuf = Buffer.Buffer<HttpHeader>(2);
+          switch (contentType) {
+            case (?ct) { headerBuf.add({ name = "Content-Type"; value = ct }) };
+            case null {};
+          };
+          headerBuf.add({ name = "Content-Length"; value = Nat64.toText(finalLength) });
+          #ok({ body = Blob.fromArray(Buffer.toArray(buffer)); headers = Buffer.toArray(headerBuf) });
+        };
+        case (#err(errMsg)) { #err(errMsg) };
+      };
+    };
+
+    func fetchChunks(total : Nat64, contentTypeHint : ?Text) : async Result.Result<FetchResult, Text> {
+      if (total > MAX_FETCH_DOCUMENT_TOTAL_BYTES) {
+        return #err("Document exceeds deterministic fetch limit; please download it directly in your browser.");
+      };
+      var offset : Nat64 = 0;
+      var contentType = contentTypeHint;
+      let initialCap = if (total < chunkSize) total else chunkSize;
+      let aggregated = Buffer.Buffer<Nat8>(Nat64.toNat(initialCap));
+      label chunkLoop while (offset < total) {
+        let remaining = total - offset;
+        let chunkCap : Nat64 = if (remaining <= chunkSize) remaining else chunkSize;
+        if (chunkCap == 0) { break chunkLoop };
+        let endInclusive = offset + chunkCap - 1;
+        let req = buildGetRequest(?(offset, endInclusive), chunkCap);
+        switch (await httpRequestWithRetries(req)) {
+          case (#ok(resp)) {
+            switch (findHeaderCaseInsensitive(resp.headers, "Content-Type")) {
+              case (?ct) { contentType := ?ct };
+              case null {};
+            };
+            if (resp.status == 200) {
+              if (!(offset == 0 and chunkCap == total)) {
+                return #err("Document server did not honor ranged request; please download directly in your browser.");
+              };
+              let bodyArray = Blob.toArray(resp.body);
+              if (Array.size(bodyArray) != Nat64.toNat(total)) {
+                return #err("Unexpected payload length from document server; please download directly in your browser.");
+              };
+              appendBlob(aggregated, resp.body);
+              offset := total;
+            } else if (resp.status == 206) {
+              let rangeHeaderOpt = findHeaderCaseInsensitive(resp.headers, "Content-Range");
+              let parsed = switch (rangeHeaderOpt) {
+                case (?value) parseContentRange(value);
+                case null null;
+              };
+              switch (parsed) {
+                case (? (start, finish, reportedTotal)) {
+                  if (reportedTotal != total or start != offset) {
+                    return #err("Unexpected Content-Range received from document server; please download directly in your browser.");
+                  };
+                  let expectedChunk : Nat64 = (finish - start) + 1;
+                  let bodyArray = Blob.toArray(resp.body);
+                  let chunkNat = Array.size(bodyArray);
+                  if (chunkNat != Nat64.toNat(expectedChunk)) {
+                    return #err("Document chunk length mismatch; please download directly in your browser.");
+                  };
+                  appendBlob(aggregated, resp.body);
+                  offset := offset + expectedChunk;
+                };
+                case null {
+                  return #err("Unable to parse Content-Range header; please download directly in your browser.");
+                };
+              };
+            } else if (resp.status == 416) {
+              return #err("Document server rejected range request; please download directly in your browser.");
+            } else {
+              return #err("Fetch failed with status " # Nat.toText(resp.status));
+            };
+          };
+          case (#err(errMsg)) { return #err(errMsg) };
+        };
+        if (offset > MAX_FETCH_DOCUMENT_TOTAL_BYTES) {
+          return #err("Document exceeds deterministic fetch limit; please download it directly in your browser.");
         };
       };
-      case (#err(errMsg)) { #err(errMsg) };
+      if (offset != total) {
+        return #err("Incomplete document downloaded; please fetch directly in your browser.");
+      };
+      let headerBuf = Buffer.Buffer<HttpHeader>(2);
+      switch (contentType) {
+        case (?ct) { headerBuf.add({ name = "Content-Type"; value = ct }) };
+        case null {};
+      };
+      headerBuf.add({ name = "Content-Length"; value = Nat64.toText(total) });
+      #ok({ body = Blob.fromArray(Buffer.toArray(aggregated)); headers = Buffer.toArray(headerBuf) });
+    };
+
+    var contentLengthOpt : ?Nat64 = null;
+    var headContentType : ?Text = null;
+    var headSupportsRanges = false;
+
+    switch (await httpRequestWithRetries(buildHeadRequest())) {
+      case (#ok(headResp)) {
+        if (headResp.status == 200) {
+          contentLengthOpt := switch (findHeaderCaseInsensitive(headResp.headers, "Content-Length")) {
+            case (?value) parseNat64(value);
+            case null null;
+          };
+          headContentType := findHeaderCaseInsensitive(headResp.headers, "Content-Type");
+          switch (findHeaderCaseInsensitive(headResp.headers, "Accept-Ranges")) {
+            case (?value) {
+              let lower = Text.toLowercase(value);
+              if (Text.contains(lower, #text "bytes")) {
+                headSupportsRanges := true;
+              };
+            };
+            case null {};
+          };
+        };
+      };
+      case (#err(_)) {};
+    };
+
+    switch (contentLengthOpt) {
+      case (?len) {
+        if (len == 0) {
+          let headerBuf = Buffer.Buffer<HttpHeader>(2);
+          switch (headContentType) {
+            case (?ct) { headerBuf.add({ name = "Content-Type"; value = ct }) };
+            case null {};
+          };
+          headerBuf.add({ name = "Content-Length"; value = "0" });
+          return #ok({ body = Blob.fromArray<Nat8>([]); headers = Buffer.toArray(headerBuf) });
+        };
+        if (len <= chunkSize) {
+          return await fetchSingle(len, ?len, headContentType);
+        };
+        if (len > MAX_FETCH_DOCUMENT_TOTAL_BYTES) {
+          return #err("Document exceeds deterministic fetch limit; please download it directly in your browser.");
+        };
+        if (not headSupportsRanges) {
+          return #err("Document is larger than the deterministic chunk limit and does not support ranged requests. Please download it directly in your browser.");
+        };
+        return await fetchChunks(len, headContentType);
+      };
+      case null {
+        return await fetchSingle(chunkSize, null, headContentType);
+      };
     };
   };
 
@@ -2106,12 +2408,33 @@ persistent actor verifier {
   // -----------------------------
   // Transforms
   // -----------------------------
+  func filterDocumentHeaders(headers : [HttpHeader]) : [HttpHeader] {
+    let buf = Buffer.Buffer<HttpHeader>(Array.size(headers));
+    for (header in headers.vals()) {
+      let lowerName = Text.toLowercase(header.name);
+      switch (lowerName) {
+        case ("content-length") { buf.add(header) };
+        case ("content-range") { buf.add(header) };
+        case ("accept-ranges") { buf.add(header) };
+        case ("content-type") { buf.add(header) };
+        case ("last-modified") { buf.add(header) };
+        case ("etag") { buf.add(header) };
+        case (_) {};
+      };
+    };
+    Buffer.toArray(buf);
+  };
+
   public query func generalTransform(args : TransformArgs) : async HttpResponsePayload {
     { status = args.response.status; headers = []; body = args.response.body };
   };
 
   public query func githubTransform(args : TransformArgs) : async HttpResponsePayload {
     { status = args.response.status; headers = []; body = args.response.body };
+  };
+
+  public query func documentTransform(args : TransformArgs) : async HttpResponsePayload {
+    { status = args.response.status; headers = filterDocumentHeaders(args.response.headers); body = args.response.body };
   };
 
   // -----------------------------
