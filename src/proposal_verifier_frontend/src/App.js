@@ -1437,6 +1437,10 @@ class App {
       this.commitStatus = '';
       const repo = this.proposalData.extractedRepo || 'dfinity/ic';
       const commit = this.proposalData.extractedCommit || '';
+
+      if (!this.proposalData.commitUrl && commit && repo) {
+        this.proposalData.commitUrl = `https://github.com/${repo}/commit/${commit}`;
+      }
       if (commit) {
         const shortCommit = commit.substring(0, 12);
         const browserOk = await this.#checkCommitInBrowser(repo, commit);
