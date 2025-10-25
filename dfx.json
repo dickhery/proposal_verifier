@@ -5,7 +5,8 @@
       "type": "motoko",
       "args": "--incremental-gc",
       "settings": {
-        "reserved_cycles_limit": "500000000000000"
+        "memory_allocation": "33554432",
+        "reserved_cycles_limit": "1000000000000"
       }
     },
     "proposal_verifier_frontend": {
