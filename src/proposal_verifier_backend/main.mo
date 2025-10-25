@@ -423,10 +423,10 @@ persistent actor verifier {
       label generalSweep for ((principal, _) in creditedByUser.entries()) {
         if (remainingOverflow == 0) { break generalSweep };
         var alreadyQueued = false;
-        for (existing in dropList.vals()) {
+        label membership for (existing in dropList.vals()) {
           if (Principal.equal(existing, principal)) {
             alreadyQueued := true;
-            break;
+            break membership;
           };
         };
         if (alreadyQueued) { continue };
