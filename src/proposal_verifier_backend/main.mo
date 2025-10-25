@@ -262,7 +262,7 @@ persistent actor verifier {
 
   // Persisted balance map (Principal -> e8s).
   stable var balancesEntries : [(Principal, Nat64)] = [];
-  var balances = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
+  transient var balances = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
 
   // --- tiny cache for deposit memos ---
   type DepositCacheEntry = {
@@ -271,7 +271,7 @@ persistent actor verifier {
     timestamp : Time.Time;
   };
   stable var depositCacheEntries : [DepositCacheEntry] = [];
-  var depositCache = HashMap.HashMap<Nat64, DepositCacheEntry>(0, nat64Equal, nat64Hash);
+  transient var depositCache = HashMap.HashMap<Nat64, DepositCacheEntry>(0, nat64Equal, nat64Hash);
   stable var lastFetchCyclesBurned : Nat = 0;
   stable var fetchCyclesHistory : [Nat] = [];
   stable var fetchCyclesTotal : Nat = 0;
@@ -285,7 +285,7 @@ persistent actor verifier {
     fetchedAt : Time.Time;
   };
   stable var icApiCacheEntries : [IcApiCacheEntry] = [];
-  var icApiCache = HashMap.HashMap<Nat64, IcApiCacheEntry>(0, nat64Equal, nat64Hash);
+  transient var icApiCache = HashMap.HashMap<Nat64, IcApiCacheEntry>(0, nat64Equal, nat64Hash);
   let IC_API_CACHE_LIMIT : Nat = 16;
   let IC_API_CACHE_TTL_NS : Int = 5 * 60 * 1_000_000_000;
   let IC_API_CACHE_MAX_PAYLOAD_BYTES : Nat = 200_000;
@@ -382,7 +382,7 @@ persistent actor verifier {
 
   // ---- Track the last observed ledger balance per user (for delta detection) ----
   stable var creditedEntries : [(Principal, Nat64)] = [];
-  var creditedByUser = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
+  transient var creditedByUser = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
 
   let MAX_TRACKED_PRINCIPALS : Nat = 1024;
 
