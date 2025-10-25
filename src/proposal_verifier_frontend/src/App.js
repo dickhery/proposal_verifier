@@ -740,6 +740,15 @@ class App {
   docHashError = '';
   docPreview = '';
 
+  // Manual document verification state (always available UI)
+  manualExpectedHash = '';
+  manualFileBytes = null;
+  manualFileInfo = null;
+  manualComputedHash = '';
+  manualMatch = null;
+  manualError = '';
+  manualPreview = '';
+
   constructor() {
     this.#initAuth();
     this.#render();
@@ -1032,16 +1041,26 @@ class App {
   }
 
   #updateChecklist() {
+    const docResults = Array.isArray(this.docResults) ? this.docResults : [];
+    const hasDocResults = docResults.length > 0;
+    const manualVerified = this.manualMatch === true;
+    const docHashComplete = hasDocResults
+      ? docResults.every((r) => r.match)
+      : manualVerified;
+
     const base = {
       fetch: !!this.proposalData,
       commit: this.commitStatus.startsWith('✅'),
       argsHash: this.hashMatch,
-      docHash:
-        this.docResults.length > 0 && this.docResults.every((r) => r.match),
+      docHash: docHashComplete,
       expected: !!this.expectedHash,
       rebuild: false,
       manual: false,
     };
+
+    if (this.docExpectation === 'not_applicable') {
+      base.docHash = false;
+    }
     const overrides = this.checklistManualOverrides || {};
     for (const [key, value] of Object.entries(overrides)) {
       if (typeof value === 'boolean') {
@@ -1482,6 +1501,15 @@ class App {
           preview: '',
         }));
 
+      // Reset manual verification state on each fetch
+      this.manualExpectedHash = '';
+      this.manualFileBytes = null;
+      this.manualFileInfo = null;
+      this.manualComputedHash = '';
+      this.manualMatch = null;
+      this.manualError = '';
+      this.manualPreview = '';
+
       // NEW: set interactive type checklist items
       this.typeChecklistItems = TYPE_CHECKLISTS.get(this.proposalData?.proposalType) || [];
 
@@ -1599,6 +1627,247 @@ class App {
         match: false,
       };
     }
+    this.#updateChecklist();
+    this.#render();
+  }
+
+  #renderDocSectionHelp() {
+    return html`
+      <details>
+        <summary>How to use</summary>
+        <p>
+          For PDFs/WASMs/tar.zst: download from links (e.g., wiki/forum), upload below. Hashes must
+          match the proposal summary or dashboard.
+        </p>
+        <p>
+          If a proposal references documents without hashes, paste the expected SHA-256 in the manual
+          verifier and upload the downloaded file to compare. You can also verify any extra
+          attachments that were missed during fetches.
+        </p>
+        <p>
+          Tip: Compute hashes locally with <code>sha256sum</code> (Linux), <code>shasum -a 256</code>
+          (macOS), or the commands suggested in the proposal, then ensure they match what you see
+          here.
+        </p>
+      </details>
+    `;
+  }
+
+  #renderAutoDocList() {
+    const docs = (this.proposalData?.extractedDocs || []).filter((d) => d.hash != null);
+    if (!docs.length) {
+      if (this.docExpectation === 'not_applicable') {
+        return html`<p>
+          No documents expected for this proposal (removal/deregistration). The manual verifier below
+          is still available if you want to check supporting files.
+        </p>`;
+      }
+      return html`<p>
+        No documents were auto-extracted. If hashes are provided elsewhere (forum, wiki, etc.), use
+        the manual verifier below to compare against the downloaded files.
+      </p>`;
+    }
+
+    return html`
+      <ul class="doc-list">
+        ${docs.map((d, idx) => {
+          const res = this.docResults[idx] || { match: false, error: '', preview: '' };
+          return html`
+            <li>
+              <b>${d.name}</b> (expected: ${d.hash || 'none'})
+              <input type="file" @change=${(e) => this.#handleFileUpload(e, idx)} />
+              <p><b>Match:</b> ${res.match ? '✅ Yes' : '❌ No'}</p>
+              ${res.error ? html`<p class="error">${res.error}</p>` : ''}
+              <p><b>Preview:</b> ${res.preview}</p>
+            </li>
+          `;
+        })}
+      </ul>
+    `;
+  }
+
+  #renderManualDocVerify() {
+    const fileInfo = this.#formatManualFileInfo();
+    return html`
+      <div class="manual-verify">
+        <h3>Manual document hash check</h3>
+        <p>
+          Always available: paste the expected SHA-256 and upload any document (PDF/WASM/tar.zst).
+          This is helpful when hashes are provided outside the summary or when a fetch misses a
+          document.
+        </p>
+        <div class="manual-inputs">
+          <input
+            id="manualExpectedHash"
+            placeholder="Expected SHA-256 (64 hex characters)"
+            .value=${this.manualExpectedHash}
+            @input=${(e) => this.#handleManualHashChange(e)}
+          />
+          <input type="file" @change=${(e) => this.#handleManualFileUpload(e)} />
+        </div>
+        <div class="manual-actions">
+          <button class="btn" @click=${() => this.#handleManualVerify()}>Verify Uploaded File</button>
+        </div>
+        ${fileInfo
+          ? html`<p class="manual-file-info"><b>Selected file:</b> ${fileInfo}</p>`
+          : ''}
+        ${this.manualComputedHash
+          ? html`<p>
+              <b>Computed SHA-256:</b>
+              <code>${this.manualComputedHash}</code>
+            </p>`
+          : ''}
+        ${this.manualMatch === true
+          ? html`<p class="manual-result success">✅ Hashes match the expected value.</p>`
+          : this.manualMatch === false
+          ? html`<p class="manual-result failure">
+              ❌ Hash mismatch. Confirm the expected hash or download the document again.
+            </p>`
+          : ''}
+        ${this.manualError ? html`<p class="error">${this.manualError}</p>` : ''}
+        ${this.manualPreview ? html`<p><b>Preview:</b> ${this.manualPreview}</p>` : ''}
+      </div>
+    `;
+  }
+
+  #renderDocSection() {
+    if (!this.proposalData) return null;
+    const docUrl = this.proposalData.extractedDocUrl ?? '';
+    const expected = this.expectedHash || '';
+    return html`
+      <section>
+        <h2>Verify Documents / Local Files</h2>
+        ${this.#renderDocSectionHelp()}
+        ${this.#renderAutoDocList()}
+        ${this.#renderManualDocVerify()}
+        <input id="docUrl" placeholder="Document URL (text/JSON only)" value=${docUrl} />
+        <input id="expectedDocHash" placeholder="Expected SHA-256" value=${expected} />
+        <button class="btn" @click=${() => this.#handleFetchVerifyDoc()}>
+          Fetch & Verify URL (text only)
+        </button>
+        ${this.docHashError ? html`<p class="error" style="margin-top:8px;">${this.docHashError}</p>` : ''}
+        ${typeof this.docHashMatch === 'boolean'
+          ? html`<p><b>URL Hash Match:</b> ${this.docHashMatch ? '✅ Yes' : '❌ No'}</p>`
+          : ''}
+        ${this.docPreview ? html`<p><b>Preview:</b> ${this.docPreview}</p>` : ''}
+      </section>
+    `;
+  }
+
+  #handleManualHashChange(event) {
+    const value = typeof event?.target?.value === 'string' ? event.target.value : '';
+    this.manualExpectedHash = value;
+    this.manualError = '';
+    this.manualMatch = null;
+    this.manualComputedHash = '';
+    this.manualPreview = '';
+    this.#updateChecklist();
+    this.#render();
+  }
+
+  async #handleManualFileUpload(event) {
+    const file = event?.target?.files?.[0];
+    this.manualError = '';
+    this.manualMatch = null;
+    this.manualComputedHash = '';
+    this.manualPreview = '';
+
+    if (!file) {
+      this.manualFileBytes = null;
+      this.manualFileInfo = null;
+      this.#updateChecklist();
+      this.#render();
+      return;
+    }
+
+    this.manualFileInfo = { name: file.name, size: file.size, type: file.type };
+
+    try {
+      const buffer = await file.arrayBuffer();
+      this.manualFileBytes = new Uint8Array(buffer);
+    } catch (err) {
+      this.manualFileBytes = null;
+      this.manualFileInfo = null;
+      this.manualError = 'Failed to read file: ' + (err?.message || String(err));
+    }
+
+    this.#updateChecklist();
+    this.#render();
+  }
+
+  #formatManualFileInfo() {
+    if (!this.manualFileInfo) return '';
+    const { name, size, type } = this.manualFileInfo;
+    const label = type && type.trim().length ? type : 'binary';
+    const sizePart = Number.isFinite(size) ? `${size} bytes` : 'unknown size';
+    return `${label} (${sizePart})${name ? ` - Local file: ${name}` : ''}`;
+  }
+
+  #buildManualPreviewText() {
+    if (!(this.manualFileBytes instanceof Uint8Array) || !this.manualFileBytes.length) {
+      return '';
+    }
+    try {
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      const snippet = decoder.decode(this.manualFileBytes.slice(0, 512));
+      const sanitized = snippet.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+      if (!sanitized.trim()) {
+        return '';
+      }
+      const ratio = snippet.length ? sanitized.length / snippet.length : 0;
+      if (ratio < 0.7) {
+        return '';
+      }
+      return sanitized.length > 200 ? `${sanitized.slice(0, 200)}…` : sanitized;
+    } catch {
+      return '';
+    }
+  }
+
+  async #handleManualVerify() {
+    this.manualError = '';
+    this.manualMatch = null;
+    this.manualComputedHash = '';
+    this.manualPreview = '';
+
+    const expectedRaw = (this.manualExpectedHash || '').trim();
+    const expectedNormalized = this.#normalizeHex(expectedRaw);
+    if (!expectedNormalized) {
+      this.manualError = 'Provide an expected SHA-256 hash to compare against.';
+      this.#updateChecklist();
+      this.#render();
+      return;
+    }
+    if (expectedNormalized.length !== 64 || !looksLikeHexString(expectedNormalized)) {
+      this.manualError = 'Expected hash must be a 64-character hexadecimal SHA-256 digest.';
+      this.#updateChecklist();
+      this.#render();
+      return;
+    }
+    if (!(this.manualFileBytes instanceof Uint8Array)) {
+      this.manualError = 'Upload a document to verify against the expected hash.';
+      this.#updateChecklist();
+      this.#render();
+      return;
+    }
+
+    try {
+      const computed = await sha256(this.manualFileBytes);
+      this.manualComputedHash = computed;
+      const computedNormalized = this.#normalizeHex(computed);
+      this.manualMatch = computedNormalized === expectedNormalized;
+      if (!this.manualMatch) {
+        this.manualError =
+          'Hashes do not match. Re-check the expected hash or re-download the document.';
+      }
+
+      const previewText = this.#buildManualPreviewText();
+      this.manualPreview = previewText || '';
+    } catch (err) {
+      this.manualError = 'Manual verification failed: ' + (err?.message || String(err));
+      this.manualMatch = false;
+    }
+
     this.#updateChecklist();
     this.#render();
   }
@@ -3072,6 +3341,16 @@ ${linuxVerifyFromEncode}</pre>
       commitStatus: this.commitStatus,
       argMatch: this.hashMatch,
       docResults: this.docResults,
+      manualDocVerification: {
+        expectedHash: this.manualExpectedHash,
+        computedHash: this.manualComputedHash,
+        match: this.manualMatch,
+        error: this.manualError,
+        preview: this.manualPreview,
+        fileName: this.manualFileInfo?.name || '',
+        fileSize: this.manualFileInfo?.size ?? null,
+        fileType: this.manualFileInfo?.type || '',
+      },
       lastFetchCyclesBurned: this.lastFetchCyclesBurned,
       rebuildScript: this.rebuildScript,
       // NEW: full metadata for plain-text export
@@ -3148,6 +3427,39 @@ ${linuxVerifyFromEncode}</pre>
       return `  - ${name}: ${match}${error}`;
     });
 
+    const manualDoc = data.manualDocVerification || {};
+    const manualLines = [];
+    const manualHasDetails =
+      manualDoc &&
+      (manualDoc.expectedHash ||
+        manualDoc.computedHash ||
+        manualDoc.error ||
+        manualDoc.preview ||
+        typeof manualDoc.match === 'boolean');
+    if (manualHasDetails) {
+      const matchLabel =
+        manualDoc.match === true ? 'Match' : manualDoc.match === false ? 'No Match' : 'Not checked';
+      const expectedLabel = ensureValue(manualDoc.expectedHash || '');
+      const computedLabel = ensureValue(manualDoc.computedHash || '');
+      const fileLabel = ensureValue(
+        [manualDoc.fileName, manualDoc.fileType, manualDoc.fileSize]
+          .filter((part) => part !== undefined && part !== null && String(part).length)
+          .join(' / '),
+      );
+      manualLines.push(`  Manual Expected Hash: ${expectedLabel}`);
+      manualLines.push(`  Manual Computed Hash: ${computedLabel}`);
+      manualLines.push(`  Manual Match Result: ${matchLabel}`);
+      if (fileLabel && fileLabel !== 'N/A') {
+        manualLines.push(`  Manual File: ${fileLabel}`);
+      }
+      if (manualDoc.error) {
+        manualLines.push(`  Manual Error: ${manualDoc.error}`);
+      }
+      if (manualDoc.preview) {
+        manualLines.push(`  Manual Preview: ${manualDoc.preview}`);
+      }
+    }
+
     const extractedUrlLines = (Array.isArray(data.extractedUrls) ? data.extractedUrls : [])
       .filter((url) => typeof url === 'string' && url.trim().length)
       .map((url) => `  - ${url.trim()}`);
@@ -3206,6 +3518,10 @@ ${linuxVerifyFromEncode}</pre>
     if (docResultLines.length) {
       lines.push('  Verification Results:');
       lines.push(...docResultLines);
+    }
+    if (manualLines.length) {
+      lines.push('  Manual Verification:');
+      lines.push(...manualLines);
     }
     lines.push('');
 
@@ -4021,52 +4337,7 @@ ${linuxVerifyFromEncode}</pre>
               ${this.#renderReleaseCommands()} ${this.#renderTypeGuidance()}
               ${this.#renderArgSection(p)}
 
-              <section>
-                <h2>Verify Documents / Local Files</h2>
-                <details>
-                  <summary>How to use</summary>
-                  <p>
-                    For PDFs/WASMs/tar.zst: download from links (e.g., wiki/forum), upload below.
-                    Hashes must match the proposal summary or dashboard.
-                  </p>
-                </details>
-                ${(() => {
-                  const docs = (this.proposalData?.extractedDocs || []).filter((d) => d.hash != null);
-                  if (!docs.length)
-                    return this.docExpectation === 'not_applicable'
-                      ? html`<p>No documents expected for this proposal (removal/deregistration).</p>`
-                      : html`<p>
-                          No documents were auto-extracted. Provide hashes from the proposal summary or upload files manually for
-                          verification.
-                        </p>`;
-                  return html`
-                    <ul class="doc-list">
-                      ${docs.map((d, idx) => {
-                        const res = this.docResults[idx] || { match: false, error: '', preview: '' };
-                        return html`
-                          <li>
-                            <b>${d.name}</b> (expected: ${d.hash || 'none'})
-                            <input type="file" @change=${(e) => this.#handleFileUpload(e, idx)} />
-                            <p><b>Match:</b> ${res.match ? '✅ Yes' : '❌ No'}</p>
-                            ${res.error ? html`<p class="error">${res.error}</p>` : ''}
-                            <p><b>Preview:</b> ${res.preview}</p>
-                          </li>
-                        `;
-                      })}
-                    </ul>
-                  `;
-                })()}
-                <input id="docUrl" placeholder="Document URL (text/JSON only)" value=${p.extractedDocUrl ?? ''} />
-                <input id="expectedDocHash" placeholder="Expected SHA-256" value=${this.expectedHash || ''} />
-                <button class="btn" @click=${() => this.#handleFetchVerifyDoc()}>
-                  Fetch & Verify URL (text only)
-                </button>
-                ${this.docHashError ? html`<p class="error" style="margin-top:8px;">${this.docHashError}</p>` : ''}
-                ${typeof this.docHashMatch === 'boolean'
-                  ? html`<p><b>URL Hash Match:</b> ${this.docHashMatch ? '✅ Yes' : '❌ No'}</p>`
-                  : ''}
-                ${this.docPreview ? html`<p><b>Preview:</b> ${this.docPreview}</p>` : ''}
-              </section>
+              ${this.#renderDocSection()}
 
               <section>
                 <h2>Payload (from Dashboard/API)</h2>
