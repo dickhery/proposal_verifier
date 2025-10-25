@@ -203,6 +203,10 @@ For Motoko backend:
    ```
 
 - Fund backend cycles: Use `dfx canister deposit-cycles` or app deposits.
+- The backend reserves 32 MiB of memory via `memory_allocation` to cap
+  future storage reservations. Adjust in `dfx.json` if your dataset grows.
+- Reserved cycles are limited to 1T to prevent runaway escrow while still
+  covering the allocated memory on subnets with high utilization.
 - Update `BENEFICIARY_ACCOUNT_HEX` in backend before deploy (see below).
 
 ### Customizing Payment Beneficiary
