@@ -264,6 +264,15 @@ persistent actor verifier {
   stable var balancesEntries : [(Principal, Nat64)] = [];
   transient var balances = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
 
+  func nat64Equal(a : Nat64, b : Nat64) : Bool { a == b };
+
+  func nat64Hash(n : Nat64) : Nat32 {
+    let base : Nat64 = 4_294_967_296;
+    let lower = Nat64.rem(n, base);
+    let upper = Nat64.div(n, base);
+    Nat32.bitxor(Nat64.toNat32(lower), Nat64.toNat32(upper));
+  };
+
   // --- tiny cache for deposit memos ---
   type DepositCacheEntry = {
     memo : Nat64;
@@ -290,15 +299,6 @@ persistent actor verifier {
   let IC_API_CACHE_TTL_NS : Int = 5 * 60 * 1_000_000_000;
   let IC_API_CACHE_MAX_PAYLOAD_BYTES : Nat = 200_000;
   let IC_API_CACHE_MAX_TOTAL_BYTES : Nat = 1_000_000;
-
-  func nat64Equal(a : Nat64, b : Nat64) : Bool { a == b };
-
-  func nat64Hash(n : Nat64) : Nat32 {
-    let base : Nat64 = 4_294_967_296;
-    let lower = Nat64.rem(n, base);
-    let upper = Nat64.div(n, base);
-    Nat32.bitxor(Nat64.toNat32(lower), Nat64.toNat32(upper));
-  };
 
   func rebuildInMemoryState() {
     balances := HashMap.HashMap<Principal, Nat64>(Array.size(balancesEntries), Principal.equal, Principal.hash);
