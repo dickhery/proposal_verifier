@@ -429,7 +429,9 @@ persistent actor verifier {
             break membership;
           };
         };
-        if (alreadyQueued) { continue };
+        if (alreadyQueued) {
+          continue generalSweep;
+        };
         dropList.add(principal);
         remainingOverflow -= 1;
       };
