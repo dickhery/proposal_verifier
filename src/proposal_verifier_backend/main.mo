@@ -471,7 +471,8 @@ persistent actor verifier {
   };
 
   func textSizeBytes(t : Text) : Nat {
-    Blob.size(Text.encodeUtf8(t));
+    let bytes = Blob.toArray(Text.encodeUtf8(t));
+    Array.size(bytes);
   };
 
   func enforceIcApiCacheBudget() {
@@ -2155,10 +2156,6 @@ persistent actor verifier {
         });
       };
     };
-  };
-
-  system func init() {
-    rebuildInMemoryState();
   };
 
   system func preupgrade() {
