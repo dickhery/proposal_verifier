@@ -870,8 +870,8 @@ persistent actor verifier {
   // -----------------------------
   // Text helpers
   // -----------------------------
-  func textSlice(t : Text, from : Nat, to : Nat) : Text {
-    let chars = Text.toArray(t);
+  let SUMMARY_PARSE_LIMIT : Nat = 60_000;
+  func textSliceFromChars(chars : [Char], from : Nat, to : Nat) : Text {
     let n = Array.size(chars);
     let start = if (from < n) from else n;
     let finishBase = if (to < n) to else n;
@@ -879,14 +879,79 @@ persistent actor verifier {
     Text.fromIter(Array.slice<Char>(chars, start, finish));
   };
 
-  func indexOf(text : Text, pattern : Text) : ?Nat {
-    let tSize = Text.size(text);
-    let pSize = Text.size(pattern);
-    if (pSize == 0 or pSize > tSize) return null;
-    label search for (i in Iter.range(0, tSize - pSize)) {
-      if (textSlice(text, i, i + pSize) == pattern) return ?i;
+  func textSlice(t : Text, from : Nat, to : Nat) : Text {
+    textSliceFromChars(Text.toArray(t), from, to);
+  };
+
+  func takeTextPrefix(t : Text, limit : Nat) : Text {
+    if (Text.size(t) <= limit) return t;
+    textSliceFromChars(Text.toArray(t), 0, limit);
+  };
+
+  func isHexCode(code : Nat32) : Bool {
+    let isDigit = (code >= 48 and code <= 57);
+    let isLower = (code >= 97 and code <= 102);
+    let isUpper = (code >= 65 and code <= 70);
+    isDigit or isLower or isUpper;
+  };
+
+  func findFirstHexOfLength(t : Text, len : Nat) : ?Text {
+    if (len == 0) return null;
+    let chars = Text.toArray(t);
+    let n = Array.size(chars);
+    if (n < len) return null;
+    let maxStart = n - len;
+    var i : Nat = 0;
+    label scan loop {
+      if (i > maxStart) break scan;
+      var valid = true;
+      var j : Nat = 0;
+      while (j < len and valid) {
+        if (not isHexCode(Char.toNat32(chars[i + j]))) {
+          valid := false;
+        };
+        j += 1;
+      };
+      if (valid) {
+        return ?textSliceFromChars(chars, i, i + len);
+      };
+      if (i == maxStart) {
+        break scan;
+      } else {
+        i += 1;
+      };
     };
-    return null;
+    null;
+  };
+
+  func indexOf(text : Text, pattern : Text) : ?Nat {
+    let textChars = Text.toArray(text);
+    let patternChars = Text.toArray(pattern);
+    let tSize = Array.size(textChars);
+    let pSize = Array.size(patternChars);
+    if (pSize == 0 or pSize > tSize) return null;
+    let maxStart = tSize - pSize;
+    var i : Nat = 0;
+    label outer loop {
+      if (i > maxStart) break outer;
+      var matched = true;
+      var j : Nat = 0;
+      while (j < pSize and matched) {
+        if (textChars[i + j] != patternChars[j]) {
+          matched := false;
+        };
+        j += 1;
+      };
+      if (matched) {
+        return ?i;
+      };
+      if (i == maxStart) {
+        break outer;
+      } else {
+        i += 1;
+      };
+    };
+    null;
   };
 
   func isWhitespace(c : Char) : Bool {
@@ -966,23 +1031,9 @@ persistent actor verifier {
     true;
   };
 
-  func findFirst40Hex(t : Text) : ?Text {
-    let n = Text.size(t);
-    for (i in Iter.range(0, if (n >= 40) n - 40 else 0)) {
-      let candidate = textSlice(t, i, i + 40);
-      if (isHex(candidate) and Text.size(candidate) == 40) return ?candidate;
-    };
-    null;
-  };
+  func findFirst40Hex(t : Text) : ?Text { findFirstHexOfLength(t, 40) };
 
-  func findFirst64Hex(t : Text) : ?Text {
-    let n = Text.size(t);
-    for (i in Iter.range(0, if (n >= 64) n - 64 else 0)) {
-      let candidate = textSlice(t, i, i + 64);
-      if (isHex(candidate) and Text.size(candidate) == 64) return ?candidate;
-    };
-    null;
-  };
+  func findFirst64Hex(t : Text) : ?Text { findFirstHexOfLength(t, 64) };
 
   func find64HexNearMarker(t : Text, marker : Text, window : Nat) : ?Text {
     switch (indexOf(t, marker)) {
@@ -1281,26 +1332,36 @@ persistent actor verifier {
     return s;
   };
 
+  let HTTPS_PREFIX_CHARS = Text.toArray("https://");
+  let HTTP_PREFIX_CHARS = Text.toArray("http://");
+
+  func startsWithAt(chars : [Char], at : Nat, pattern : [Char]) : Bool {
+    let n = Array.size(chars);
+    let pLen = Array.size(pattern);
+    if (at + pLen > n) return false;
+    var idx : Nat = 0;
+    while (idx < pLen) {
+      if (chars[at + idx] != pattern[idx]) return false;
+      idx += 1;
+    };
+    true;
+  };
+
   func extractAllUrls(t : Text) : [Text] {
     let normalized = unescapeSlashEscapes(t);
-    let n = Text.size(normalized);
     let chars = Text.toArray(normalized);
+    let n = Array.size(chars);
     var i : Nat = 0;
     var acc : [Text] = [];
-    func isHttpStart(at : Nat) : Bool {
-      let max8 = Nat.min(n, at + 8);
-      let slice8 = textSlice(normalized, at, max8);
-      Text.contains(slice8, #text "https://") or Text.contains(slice8, #text "http://");
-    };
     while (i < n) {
-      if (isHttpStart(i)) {
+      if (startsWithAt(chars, i, HTTPS_PREFIX_CHARS) or startsWithAt(chars, i, HTTP_PREFIX_CHARS)) {
         var j = i;
         label adv while (j < n) {
           let ch = chars[j];
           if (ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t') break adv;
           j += 1;
         };
-        let raw = textSlice(normalized, i, j);
+        let raw = textSliceFromChars(chars, i, j);
         let clean = sanitizeUrl(raw);
         var exists = false;
         for (u in acc.vals()) { if (u == clean) { exists := true } };
@@ -1701,16 +1762,17 @@ persistent actor verifier {
           switch (info.id, info.proposal) {
             case (?pid, ?proposal) {
               let summary = proposal.summary;
+              let summaryForParsing = takeTextPrefix(summary, SUMMARY_PARSE_LIMIT);
 
-              let (repoFromUrlOpt, commitFromUrlOpt) = extractGithubRepoAndCommit(summary);
-              let commit40Opt = findFirst40Hex(summary);
-              let sha256Opt = findFirst64Hex(summary);
+              let (repoFromUrlOpt, commitFromUrlOpt) = extractGithubRepoAndCommit(summaryForParsing);
+              let commit40Opt = findFirst40Hex(summaryForParsing);
+              let sha256Opt = findFirst64Hex(summaryForParsing);
 
               // Robust URL extraction from summary
-              let urls = extractAllUrls(summary);
+              let urls = extractAllUrls(summaryForParsing);
               let docUrlOpt = chooseDocUrl(urls);
 
-              let artifactOpt = extractArtifactPath(summary);
+              let artifactOpt = extractArtifactPath(summaryForParsing);
               let repoFinal = switch (repoFromUrlOpt) {
                 case (?r) ?r;
                 case null null;
@@ -1728,11 +1790,11 @@ persistent actor verifier {
               };
 
               // Simple type classification
-              let lowerSummary = Text.toLowercase(summary);
+              let lowerSummary = Text.toLowercase(summaryForParsing);
               let proposalType = if (Text.contains(lowerSummary, #text "ic os") or Text.contains(lowerSummary, #text "replica") or Text.contains(lowerSummary, #text "guestos")) "IcOsVersionDeployment" else if (Text.contains(lowerSummary, #text "wasm") or Text.contains(lowerSummary, #text "canister")) "ProtocolCanisterManagement" else if (Text.contains(lowerSummary, #text "motion")) "Governance" else if (Text.contains(lowerSummary, #text "node provider")) "ParticipantManagement" else if (Text.contains(lowerSummary, #text "subnet")) "SubnetManagement" else if (Text.contains(lowerSummary, #text "sns")) "ServiceNervousSystemManagement" else if (Text.contains(lowerSummary, #text "application canister")) "ApplicationCanisterManagement" else if (Text.contains(lowerSummary, #text "economics")) "NetworkEconomics" else "Unknown";
 
               // Extract bullet docs
-              let extractedDocs = extractDocuments(summary);
+              let extractedDocs = extractDocuments(summaryForParsing);
               let docExpectation = detectDocExpectation(proposalType, lowerSummary, extractedDocs.size());
 
               // For ParticipantManagement, default wiki if not present
