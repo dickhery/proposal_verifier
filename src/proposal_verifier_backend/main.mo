@@ -1,20 +1,21 @@
 import Array "mo:base/Array";
 import Blob "mo:base/Blob";
+import Buffer "mo:base/Buffer";
+import Char "mo:base/Char";
 import Cycles "mo:base/ExperimentalCycles";
+import Debug "mo:base/Debug";
 import Error "mo:base/Error";
+import HashMap "mo:base/HashMap";
+import Int32 "mo:base/Int32";
 import Iter "mo:base/Iter";
 import Nat "mo:base/Nat";
-import Nat8 "mo:base/Nat8";
 import Nat32 "mo:base/Nat32";
 import Nat64 "mo:base/Nat64";
+import Nat8 "mo:base/Nat8";
 import Principal "mo:base/Principal";
 import Result "mo:base/Result";
 import Text "mo:base/Text";
-import Char "mo:base/Char";
-import Buffer "mo:base/Buffer";
 import Time "mo:base/Time";
-import Int32 "mo:base/Int32";
-import Debug "mo:base/Debug";
 
 persistent actor verifier {
 
@@ -259,9 +260,9 @@ persistent actor verifier {
 
   stable var legacyRatesSnapshot : ?LegacyRateSnapshot = null;
 
-  // Very small, persistent balance map (Principal -> e8s).
-  // Simple array-based storage to keep stability trivial.
-  var balances : [(Principal, Nat64)] = [];
+  // Persisted balance map (Principal -> e8s).
+  stable var balancesEntries : [(Principal, Nat64)] = [];
+  var balances = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
 
   // --- tiny cache for deposit memos ---
   type DepositCacheEntry = {
@@ -269,7 +270,8 @@ persistent actor verifier {
     amount_e8s : Nat64;
     timestamp : Time.Time;
   };
-  stable var depositCache : [DepositCacheEntry] = [];
+  stable var depositCacheEntries : [DepositCacheEntry] = [];
+  var depositCache = HashMap.HashMap<Nat64, DepositCacheEntry>(0, nat64Equal, nat64Hash);
   stable var lastFetchCyclesBurned : Nat = 0;
   stable var fetchCyclesHistory : [Nat] = [];
   stable var fetchCyclesTotal : Nat = 0;
@@ -282,56 +284,71 @@ persistent actor verifier {
     payload : Text;
     fetchedAt : Time.Time;
   };
-  var icApiCache : [IcApiCacheEntry] = [];
+  stable var icApiCacheEntries : [IcApiCacheEntry] = [];
+  var icApiCache = HashMap.HashMap<Nat64, IcApiCacheEntry>(0, nat64Equal, nat64Hash);
   let IC_API_CACHE_LIMIT : Nat = 16;
   let IC_API_CACHE_TTL_NS : Int = 5 * 60 * 1_000_000_000;
+  let IC_API_CACHE_MAX_PAYLOAD_BYTES : Nat = 200_000;
+  let IC_API_CACHE_MAX_TOTAL_BYTES : Nat = 1_000_000;
+
+  func nat64Equal(a : Nat64, b : Nat64) : Bool { a == b };
+
+  func nat64Hash(n : Nat64) : Nat32 {
+    let base : Nat64 = 4_294_967_296;
+    let lower = Nat64.rem(n, base);
+    let upper = Nat64.div(n, base);
+    Nat32.bitxor(Nat64.toNat32(lower), Nat64.toNat32(upper));
+  };
+
+  func rebuildInMemoryState() {
+    balances := HashMap.HashMap<Principal, Nat64>(Array.size(balancesEntries), Principal.equal, Principal.hash);
+    for ((principal, amount) in balancesEntries.vals()) {
+      if (amount != 0) {
+        balances.put(principal, amount);
+      };
+    };
+
+    creditedByUser := HashMap.HashMap<Principal, Nat64>(Array.size(creditedEntries), Principal.equal, Principal.hash);
+    for ((principal, amount) in creditedEntries.vals()) {
+      if (amount != 0) {
+        creditedByUser.put(principal, amount);
+      };
+    };
+    enforceCreditedLimit();
+
+    depositCache := HashMap.HashMap<Nat64, DepositCacheEntry>(Array.size(depositCacheEntries), nat64Equal, nat64Hash);
+    for (entry in depositCacheEntries.vals()) {
+      depositCache.put(entry.memo, entry);
+    };
+
+    icApiCache := HashMap.HashMap<Nat64, IcApiCacheEntry>(Array.size(icApiCacheEntries), nat64Equal, nat64Hash);
+    for (entry in icApiCacheEntries.vals()) {
+      icApiCache.put(entry.id, entry);
+    };
+    enforceIcApiCacheBudget();
+  };
 
   func cacheGet(memo : Nat64) : ?DepositCacheEntry {
-    for (e in depositCache.vals()) {
-      if (e.memo == memo) return ?e;
-    };
-    null;
+    depositCache.get(memo);
   };
 
   func cacheUpsert(entry : DepositCacheEntry) {
-    // Replace existing (by memo) or append
-    var found = false;
-    let buf = Buffer.Buffer<DepositCacheEntry>(Array.size(depositCache));
-    for (e in depositCache.vals()) {
-      if (e.memo == entry.memo) {
-        buf.add(entry);
-        found := true;
-      } else {
-        buf.add(e);
-      };
-    };
-    if (not found) { buf.add(entry) };
+    depositCache.put(entry.memo, entry);
 
-    var arr = Buffer.toArray(buf);
-
-    // Trim to max size by dropping the oldest timestamp
-    if (Array.size(arr) > DEPOSIT_CACHE_MAX) {
-      // find index of minimum timestamp
-      var minIdx : Nat = 0;
-      var minTs : Time.Time = arr[0].timestamp;
-      var i : Nat = 1;
-      while (i < Array.size(arr)) {
-        if (arr[i].timestamp < minTs) {
-          minTs := arr[i].timestamp;
-          minIdx := i;
+    if (depositCache.size() > DEPOSIT_CACHE_MAX) {
+      var minMemo : ?Nat64 = null;
+      var minTimestamp : Time.Time = entry.timestamp;
+      label sweep for ((memo, cached) in depositCache.entries()) {
+        if (minMemo == null or cached.timestamp < minTimestamp) {
+          minMemo := ?memo;
+          minTimestamp := cached.timestamp;
         };
-        i += 1;
       };
-      let buf2 = Buffer.Buffer<DepositCacheEntry>(Array.size(arr) - 1);
-      var j : Nat = 0;
-      while (j < Array.size(arr)) {
-        if (j != minIdx) { buf2.add(arr[j]) };
-        j += 1;
+      switch (minMemo) {
+        case (?m) { ignore depositCache.remove(m) };
+        case null {};
       };
-      arr := Buffer.toArray(buf2);
     };
-
-    depositCache := arr;
   };
 
   func recordFetchCyclesBurned(cycles : Nat) {
@@ -364,99 +381,141 @@ persistent actor verifier {
   };
 
   // ---- Track the last observed ledger balance per user (for delta detection) ----
-  stable var creditedByUser : [(Principal, Nat64)] = [];
+  stable var creditedEntries : [(Principal, Nat64)] = [];
+  var creditedByUser = HashMap.HashMap<Principal, Nat64>(0, Principal.equal, Principal.hash);
 
   let MAX_TRACKED_PRINCIPALS : Nat = 1024;
 
-  func compactPrincipalArray(list : [(Principal, Nat64)]) : [(Principal, Nat64)] {
-    let filtered = Buffer.Buffer<(Principal, Nat64)>(Array.size(list));
-    for (entry in list.vals()) {
-      if (entry.1 != 0) {
-        filtered.add(entry);
-      };
-    };
-    var trimmed = Buffer.toArray(filtered);
-    if (Array.size(trimmed) > MAX_TRACKED_PRINCIPALS) {
-      let drop = Array.size(trimmed) - MAX_TRACKED_PRINCIPALS;
-      trimmed := Array.subArray(trimmed, drop, MAX_TRACKED_PRINCIPALS);
-    };
-    trimmed;
-  };
-
   func getCredited(p : Principal) : Nat64 {
-    for (pair in creditedByUser.vals()) { if (pair.0 == p) return pair.1 };
-    0;
+    switch (creditedByUser.get(p)) {
+      case (?value) value;
+      case null 0;
+    };
   };
 
   func setCredited(p : Principal, v : Nat64) {
-    let buf = Buffer.Buffer<(Principal, Nat64)>(Array.size(creditedByUser));
-    var found = false;
-    for (pair in creditedByUser.vals()) {
-      if (pair.0 == p) {
-        found := true;
-        if (v != 0) {
-          buf.add((p, v));
-        };
-      } else {
-        buf.add(pair);
+    if (v == 0) {
+      ignore creditedByUser.remove(p);
+    } else {
+      creditedByUser.put(p, v);
+    };
+    enforceCreditedLimit();
+  };
+
+  func enforceCreditedLimit() {
+    let currentSize = creditedByUser.size();
+    if (currentSize <= MAX_TRACKED_PRINCIPALS) { return };
+
+    let overflow = currentSize - MAX_TRACKED_PRINCIPALS;
+    let dropList = Buffer.Buffer<Principal>(overflow);
+    var remainingOverflow = overflow;
+
+    // Prefer removing zero-balance entries first.
+    label zeroSweep for ((principal, amount) in creditedByUser.entries()) {
+      if (remainingOverflow == 0) { break zeroSweep };
+      if (amount == 0) {
+        dropList.add(principal);
+        remainingOverflow -= 1;
       };
     };
-    if (not found and v != 0) { buf.add((p, v)) };
-    creditedByUser := compactPrincipalArray(Buffer.toArray(buf));
+
+    if (remainingOverflow > 0) {
+      label generalSweep for ((principal, _) in creditedByUser.entries()) {
+        if (remainingOverflow == 0) { break generalSweep };
+        var alreadyQueued = false;
+        for (existing in dropList.vals()) {
+          if (Principal.equal(existing, principal)) {
+            alreadyQueued := true;
+            break;
+          };
+        };
+        if (alreadyQueued) { continue };
+        dropList.add(principal);
+        remainingOverflow -= 1;
+      };
+    };
+
+    for (principal in dropList.vals()) {
+      ignore creditedByUser.remove(principal);
+    };
   };
 
   func pruneIcApiCache(now : Time.Time) {
-    let buf = Buffer.Buffer<IcApiCacheEntry>(Array.size(icApiCache));
-    for (entry in icApiCache.vals()) {
-      if (now - entry.fetchedAt <= IC_API_CACHE_TTL_NS) { buf.add(entry) };
+    let expired = Buffer.Buffer<Nat64>(0);
+    for ((id, entry) in icApiCache.entries()) {
+      if (now - entry.fetchedAt > IC_API_CACHE_TTL_NS) {
+        expired.add(id);
+      };
     };
-    icApiCache := Buffer.toArray(buf);
+    for (id in expired.vals()) {
+      ignore icApiCache.remove(id);
+    };
+    enforceIcApiCacheBudget();
   };
 
   func icApiCacheLookup(id : Nat64) : ?IcApiCacheEntry {
-    for (entry in icApiCache.vals()) {
-      if (entry.id == id) { return ?entry };
-    };
-    null;
+    icApiCache.get(id);
   };
 
   func icApiCacheStore(id : Nat64, payload : Text, timestamp : Time.Time) {
-    let buf = Buffer.Buffer<IcApiCacheEntry>(Array.size(icApiCache));
-    var replaced = false;
-    for (entry in icApiCache.vals()) {
-      if (entry.id == id) {
-        buf.add({ id = id; payload = payload; fetchedAt = timestamp });
-        replaced := true;
-      } else {
-        buf.add(entry);
-      };
-    };
-    if (not replaced) {
-      buf.add({ id = id; payload = payload; fetchedAt = timestamp });
+    let payloadBytes = textSizeBytes(payload);
+    if (payloadBytes > IC_API_CACHE_MAX_PAYLOAD_BYTES) {
+      // Skip caching unusually large payloads to avoid memory spikes.
+      return;
     };
 
-    var arr = Buffer.toArray(buf);
-    if (Array.size(arr) > IC_API_CACHE_LIMIT) {
-      var oldestIdx : Nat = 0;
-      var oldestTs : Time.Time = arr[0].fetchedAt;
-      var i : Nat = 1;
-      while (i < Array.size(arr)) {
-        if (arr[i].fetchedAt < oldestTs) {
-          oldestTs := arr[i].fetchedAt;
-          oldestIdx := i;
+    icApiCache.put(id, { id = id; payload = payload; fetchedAt = timestamp });
+    enforceIcApiCacheBudget();
+  };
+
+  func textSizeBytes(t : Text) : Nat {
+    Blob.size(Text.encodeUtf8(t));
+  };
+
+  func enforceIcApiCacheBudget() {
+    var totalBytes : Nat = 0;
+    for ((_, entry) in icApiCache.entries()) {
+      totalBytes += textSizeBytes(entry.payload);
+    };
+
+    var needsTrim = icApiCache.size() > IC_API_CACHE_LIMIT or totalBytes > IC_API_CACHE_MAX_TOTAL_BYTES;
+    while (needsTrim) {
+      var oldestId : ?Nat64 = null;
+      var oldestTimestamp : Time.Time = 0;
+      for ((entryId, entry) in icApiCache.entries()) {
+        if (oldestId == null or entry.fetchedAt < oldestTimestamp) {
+          oldestId := ?entryId;
+          oldestTimestamp := entry.fetchedAt;
         };
-        i += 1;
       };
-      let trimmed = Buffer.Buffer<IcApiCacheEntry>(Array.size(arr) - 1);
-      var j : Nat = 0;
-      while (j < Array.size(arr)) {
-        if (j != oldestIdx) { trimmed.add(arr[j]) };
-        j += 1;
-      };
-      arr := Buffer.toArray(trimmed);
-    };
 
-    icApiCache := arr;
+      switch (oldestId) {
+        case (?rid) {
+          switch (icApiCache.remove(rid)) {
+            case (?removed) {
+              let bytesRemoved = textSizeBytes(removed.payload);
+              if (totalBytes >= bytesRemoved) {
+                totalBytes -= bytesRemoved;
+              } else {
+                totalBytes := 0;
+              };
+            };
+            case null {};
+          };
+        };
+        case null { return };
+      };
+
+      needsTrim := icApiCache.size() > IC_API_CACHE_LIMIT or totalBytes > IC_API_CACHE_MAX_TOTAL_BYTES;
+    };
+  };
+
+  func icApiCacheTotalBytes() : Nat {
+    var total : Nat = 0;
+    for ((_, entry) in icApiCache.entries()) {
+      total += textSizeBytes(entry.payload);
+    };
+    total;
   };
 
   // Beneficiary Account Identifier (32 bytes) where fees are forwarded
@@ -526,27 +585,18 @@ persistent actor verifier {
   };
 
   func getBalanceInternal(p : Principal) : Nat64 {
-    for (pair in balances.vals()) {
-      if (pair.0 == p) return pair.1;
+    switch (balances.get(p)) {
+      case (?value) value;
+      case null 0;
     };
-    0;
   };
 
   func setBalanceInternal(p : Principal, newBal : Nat64) {
-    let buf = Buffer.Buffer<(Principal, Nat64)>(Array.size(balances));
-    var found = false;
-    for (pair in balances.vals()) {
-      if (pair.0 == p) {
-        found := true;
-        if (newBal != 0) {
-          buf.add((p, newBal));
-        };
-      } else {
-        buf.add(pair);
-      };
+    if (newBal == 0) {
+      ignore balances.remove(p);
+    } else {
+      balances.put(p, newBal);
     };
-    if (not found and newBal != 0) { buf.add((p, newBal)) };
-    balances := compactPrincipalArray(Buffer.toArray(buf));
   };
 
   func addBalanceInternal(p : Principal, delta : Nat64) {
@@ -2105,6 +2155,10 @@ persistent actor verifier {
     };
   };
 
+  system func init() {
+    rebuildInMemoryState();
+  };
+
   system func preupgrade() {
     legacyRatesSnapshot := ?{
       cmc = CMC;
@@ -2113,6 +2167,11 @@ persistent actor verifier {
       lastRateTimestampSeconds = last_rate_timestamp_seconds;
       lastXdrPermyriadPerIcp = last_xdr_permyriad_per_icp;
     };
+
+    balancesEntries := Iter.toArray(balances.entries());
+    creditedEntries := Iter.toArray(creditedByUser.entries());
+    depositCacheEntries := Iter.toArray(depositCache.vals());
+    icApiCacheEntries := Iter.toArray(icApiCache.vals());
   };
 
   system func postupgrade() {
@@ -2127,6 +2186,11 @@ persistent actor verifier {
       case null {};
     };
     legacyRatesSnapshot := null;
+    rebuildInMemoryState();
+    balancesEntries := [] : [(Principal, Nat64)];
+    creditedEntries := [] : [(Principal, Nat64)];
+    depositCacheEntries := [] : [DepositCacheEntry];
+    icApiCacheEntries := [] : [IcApiCacheEntry];
   };
 
   // -----------------------------
@@ -2143,6 +2207,22 @@ persistent actor verifier {
   // -----------------------------
   // Debug
   // -----------------------------
+  public query func getStorageStats() : async {
+    balancesSize : Nat;
+    creditedSize : Nat;
+    depositCacheSize : Nat;
+    icApiCacheSize : Nat;
+    icApiCacheBytes : Nat;
+  } {
+    {
+      balancesSize = balances.size();
+      creditedSize = creditedByUser.size();
+      depositCacheSize = depositCache.size();
+      icApiCacheSize = icApiCache.size();
+      icApiCacheBytes = icApiCacheTotalBytes();
+    };
+  };
+
   public query func getLastFetchCyclesBurned() : async Nat {
     lastFetchCyclesBurned;
   };
