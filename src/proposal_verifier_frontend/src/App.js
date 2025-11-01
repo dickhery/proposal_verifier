@@ -2678,16 +2678,6 @@ ${linuxVerifyFromEncode}</pre>
           },
         )}
       </ul>
-      <div style="margin-top:8px;">
-        <button
-          class="btn secondary"
-          @click=${() => {
-            this.#setChecklistOverride('rebuild', true);
-          }}
-        >
-          Mark Rebuild Done
-        </button>
-      </div>
     `;
   }
 
@@ -4323,6 +4313,37 @@ ${linuxVerifyFromEncode}</pre>
                 ${this.#renderLinks()}
               </section>
 
+              <section>
+                <h2>Checklist</h2>
+                ${this.#renderTypeChecklist()}
+              </section>
+
+              <section>
+                <h2>Verification Steps for ${p.proposalType}</h2>
+                ${(() => {
+                  const steps = (this.verificationSteps || '').trim();
+                  if (!steps) return html`<p>No type-specific steps available for this proposal.</p>`;
+                  const normalizeStepText = (line) => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return '';
+                    const withoutPrefix = trimmed.replace(/^(?:\d+\s*[.)]|[-*•])\s*/, '');
+                    return withoutPrefix.trim() || trimmed;
+                  };
+                  const items = steps
+                    .split('\n')
+                    .map((s) => normalizeStepText(s))
+                    .filter(Boolean);
+                  return html`<ol class="steps-list">
+                    ${items.map((s) => html`<li>${s}</li>`)}
+                  </ol>`;
+                })()}
+              </section>
+
+              <section>
+                <h2>Required Tools</h2>
+                <pre>${this.requiredTools || 'No specific tools required for this type.'}</pre>
+              </section>
+
               ${this.#renderReleaseCommands()} ${this.#renderTypeGuidance()}
               ${this.#renderArgSection(p)}
 
@@ -4350,32 +4371,6 @@ ${linuxVerifyFromEncode}</pre>
                   Compare your local <code>sha256sum</code>/<code>shasum -a 256</code> with the
                   <b>onchain WASM hash</b>: ${p.proposal_wasm_hash ?? 'N/A'}
                 </p>
-              </section>
-
-              <section>
-                <h2>Verification Steps for ${p.proposalType}</h2>
-                ${(() => {
-                  const steps = (this.verificationSteps || '').trim();
-                  if (!steps) return html`<p>No type-specific steps available for this proposal.</p>`;
-                  const normalizeStepText = (line) => {
-                    const trimmed = line.trim();
-                    if (!trimmed) return '';
-                    const withoutPrefix = trimmed.replace(/^(?:\d+\s*[.)]|[-*•])\s*/, '');
-                    return withoutPrefix.trim() || trimmed;
-                  };
-                  const items = steps
-                    .split('\n')
-                    .map((s) => normalizeStepText(s))
-                    .filter(Boolean);
-                  return html`<ol class="steps-list">
-                    ${items.map((s) => html`<li>${s}</li>`)}
-                  </ol>`;
-                })()}
-              </section>
-
-              <section>
-                <h2>Required Tools</h2>
-                <pre>${this.requiredTools || 'No specific tools required for this type.'}</pre>
               </section>
 
               ${this.typeChecklistItems.length
