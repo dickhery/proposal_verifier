@@ -378,6 +378,16 @@ function extractDashboardReportFields(rawText) {
 }
 
 // Add type-specific checklists (keys map to this.checklist fields)
+const DEFAULT_TYPE_CHECKLIST = [
+  { label: 'Fetch Proposal', key: 'fetch' },
+  { label: 'Commit Check', key: 'commit' },
+  { label: 'Arg Hash Verified', key: 'argsHash' },
+  { label: 'Doc / File Hash', key: 'docHash' },
+  { label: 'Expected Hash from Sources', key: 'expected' },
+  { label: 'Rebuild & Compare', key: 'rebuild' },
+  { label: 'Manual Review', key: 'manual' },
+];
+
 const TYPE_CHECKLISTS = new Map([
   [
     'ProtocolCanisterManagement',
@@ -413,7 +423,19 @@ const TYPE_CHECKLISTS = new Map([
       { label: 'Manual Policy Review', key: 'manual' },
     ],
   ],
+  [
+    'SubnetManagement',
+    [
+      { label: 'Fetch Proposal', key: 'fetch' },
+      { label: 'Manual Review (Topology & Payload)', key: 'manual' },
+    ],
+  ],
 ]);
+
+const getTypeChecklistItems = (type) => {
+  const source = TYPE_CHECKLISTS.get(type) || DEFAULT_TYPE_CHECKLIST;
+  return source.map((item) => ({ ...item }));
+};
 
 const REPORT_HEADER_KEYS = [
   'proposalId',
@@ -1511,7 +1533,7 @@ class App {
       this.manualPreview = '';
 
       // NEW: set interactive type checklist items
-      this.typeChecklistItems = TYPE_CHECKLISTS.get(this.proposalData?.proposalType) || [];
+      this.typeChecklistItems = getTypeChecklistItems(this.proposalData?.proposalType);
 
       this.#updateChecklist();
     } catch (err) {
@@ -2633,15 +2655,15 @@ ${linuxVerifyFromEncode}</pre>
   }
 
   #renderTypeChecklist() {
+    const type = this.proposalData?.proposalType;
+    const storedItems = this.typeChecklists.get(type);
     const items =
-      this.typeChecklists.get(this.proposalData?.proposalType) || [
-        { label: 'Fetch', key: 'fetch', checked: this.checklist.fetch },
-        { label: 'Commit Check', key: 'commit', checked: this.checklist.commit },
-        { label: 'Arg Hash', key: 'argsHash', checked: this.checklist.argsHash },
-        { label: 'Doc / File Hash', key: 'docHash', checked: this.checklist.docHash },
-        { label: 'Expected Hash from Sources', key: 'expected', checked: this.checklist.expected },
-        { label: 'Rebuild & Compare', key: 'rebuild', checked: this.checklist.rebuild },
-      ];
+      storedItems && storedItems.length
+        ? storedItems
+        : getTypeChecklistItems(type).map((item) => ({
+            ...item,
+            checked: this.checklist[item.key],
+          }));
     return html`
       <ul>
         ${items.map(
@@ -2671,45 +2693,12 @@ ${linuxVerifyFromEncode}</pre>
 
   #updateTypeChecklist() {
     const type = this.proposalData?.proposalType || 'Unknown';
-    let items;
-    switch (type) {
-      case 'ProtocolCanisterManagement':
-        items = [
-          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
-          { label: 'Commit Check', key: 'commit', checked: this.checklist.commit },
-          { label: 'Expected WASM Hash Present', key: 'expected', checked: this.checklist.expected },
-          { label: 'Arg Hash Verified', key: 'argsHash', checked: this.checklist.argsHash },
-          { label: 'WASM Rebuilt & Hash Matched', key: 'rebuild', checked: this.checklist.rebuild },
-        ];
-        break;
-      case 'IcOsVersionDeployment':
-        items = [
-          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
-          { label: 'Expected Release Hash Present', key: 'expected', checked: this.checklist.expected },
-          { label: 'Commit Check (if provided)', key: 'commit', checked: this.checklist.commit },
-          { label: 'Release Package Hash Verified', key: 'docHash', checked: this.checklist.docHash },
-        ];
-        break;
-      case 'ParticipantManagement':
-        items = [
-          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
-          { label: 'All PDFs Hash-Matched', key: 'docHash', checked: this.checklist.docHash },
-          { label: 'Forum/Wiki Context Checked', key: 'manual', checked: this.checklist.manual },
-        ];
-        break;
-      case 'Governance':
-        items = [
-          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
-          { label: 'Manual Policy Review', key: 'manual', checked: this.checklist.manual },
-        ];
-        break;
-      default:
-        items = [
-          { label: 'Fetch Proposal', key: 'fetch', checked: this.checklist.fetch },
-          { label: 'Manual Review', key: 'manual', checked: this.checklist.manual },
-        ];
-    }
-    this.typeChecklists.set(type, items);
+    const itemsWithState = getTypeChecklistItems(type).map((item) => ({
+      ...item,
+      checked: this.checklist[item.key],
+    }));
+    this.typeChecklists.set(type, itemsWithState);
+    this.typeChecklistItems = getTypeChecklistItems(type);
   }
 
   // ----------------- NEW: Export helpers -----------------
