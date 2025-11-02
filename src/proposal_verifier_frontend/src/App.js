@@ -853,6 +853,7 @@ class App {
     this.lastFetchCyclesBurned = null;
     this.fetchCyclesAverage = null;
     this.fetchCyclesCount = 0;
+    this.cycleBalance = null;
     // Also clear the cached owner blob used by utils.principalToAccountIdentifier
     try {
       // eslint-disable-next-line no-undef
@@ -879,6 +880,7 @@ class App {
     // NEW: get owner/subaccount + live ledger/credited status
     await this.#loadDepositStatus();
     await this.#loadCycleStats();
+    await this.#refreshCycleBalance();
   }
 
   async #refreshBalance() {
@@ -886,6 +888,19 @@ class App {
       this.userBalance = Number(await this.backend.getBalance());
     } catch {
       this.userBalance = 0;
+    }
+  }
+
+  async #refreshCycleBalance() {
+    if (!this.backend || typeof this.backend.getCycleBalance !== 'function') {
+      this.cycleBalance = 'Unavailable';
+      return;
+    }
+    try {
+      this.cycleBalance = 'Loading…';
+      this.cycleBalance = await this.backend.getCycleBalance();
+    } catch (err) {
+      this.cycleBalance = 'Error: ' + (err?.message || String(err));
     }
   }
 
@@ -1541,6 +1556,7 @@ class App {
     }
 
     await this.#loadCycleStats();
+    await this.#refreshCycleBalance();
     this.#setFetching(false);
   }
 
@@ -1591,6 +1607,7 @@ class App {
         // stay in sync with canister-side balance state
         await this.#refreshBalance();
         await this.#loadDepositStatus();
+        await this.#refreshCycleBalance();
       } else {
         // Fallback to browser fetch (no billing, but CORS-limited)
         const u = new URL(url);
@@ -1895,11 +1912,7 @@ class App {
   }
 
   async #handleCheckCycles() {
-    try {
-      this.cycleBalance = await this.backend.getCycleBalance();
-    } catch (err) {
-      this.cycleBalance = 'Error: ' + (err.message || String(err));
-    }
+    await this.#refreshCycleBalance();
     this.#render();
   }
 
@@ -4062,6 +4075,9 @@ ${linuxVerifyFromEncode}</pre>
                   </div>  -->
                   <div style="font-size:12px;">
                     <b>Balance</b>: ${(this.userBalance / 1e8).toFixed(8)} ICP
+                  </div>
+                  <div style="font-size:12px;">
+                    <b>Backend cycles</b>: ${this.#formatCyclesDisplay(this.cycleBalance)}
                   </div>
                   <div style="font-size:12px;">
                     <b>Fees</b>: Fetch Proposal = ${(Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(1)}
