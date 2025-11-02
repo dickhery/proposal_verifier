@@ -700,26 +700,39 @@ export function FAQView({ onBack }) {
         qa(
           '55) How can I review or top up my balance?',
           `
-            Open the <em>Payments</em> drawer (wallet icon). It shows your principal, subaccount ID, current balance, recent debits,
-            and a “Deposit” CTA with a QR code + raw hex address. Use any NNS wallet, hardware wallet, or ledger CLI to send ICP
-            to that subaccount. After topping up, refresh balances via the UI button; the backend queries the ledger and updates
-            your available funds instantly.
+            Open the <em>Payments</em> drawer (wallet icon). It lists your principal, the dedicated deposit subaccount, current
+            balance, recent debits, and a “Deposit” button with QR code + raw hex address. Use any NNS wallet, hardware wallet,
+            or the ledger CLI to send ICP directly to that subaccount. After you broadcast the transfer, give the ledger a few
+            blocks to finalize and then click the <b>Refresh balances</b> button—the app calls the backend to resync your balance
+            before enabling billed actions.
             <br/><br/>
-            <b>Tip:</b> copy the account identifier directly from the UI to avoid transcription mistakes.
+            If you just authenticated, the drawer may briefly show “calculating…” while it derives your deposit address. Wait a
+            couple of seconds (or reopen the drawer) until the address renders, then fund it and hit Refresh after the deposit
+            settles. You can cross-check the on-chain amount via the ledger explorer linked in the drawer.
+            <br/><br/>
+            <b>Tip:</b> copy the account identifier directly from the UI to avoid transcription mistakes, and make sure the status
+            pill shows you are logged in so the refreshed balance attaches to the correct principal.
           `,
-          helper('The drawer also exposes a one-click “Copy account identifier” control to avoid transcription mistakes.')
+          helper(
+            'The drawer provides copy buttons, a direct ledger explorer link, and the Refresh balances control that triggers a new ledger query.'
+          )
         ),
         qa(
-          '56) Why does the app forward fees to a beneficiary address?',
+          '56) Why does the app forward fees to a beneficiary address, and what cycle balance does the backend need?',
           `
             Cycles for HTTPS outcalls, GitHub API usage, and ledger queries must be funded. The backend transfers the collected
             ICP from your deposit subaccount to a configured beneficiary account so the operator can convert it into cycles and
-            keep the service online. When self-hosting you should replace the default address with one you control to capture
-            those fees and fund your own deployment (details below).
+            keep the service online. The verifier refuses to fetch proposals if the backend canister balance drops below
+            <b>3&nbsp;trillion cycles</b>, so keeping deposits flowing (and converting them to cycles) is essential. If you see a
+            “service temporarily unavailable” error, the cycle balance has likely fallen under that threshold—top it up and try
+            again once the operator replenishes the canister.
             <br/><br/>
-            <b>Self-hosters:</b> change the beneficiary constant before deploying so fees flow to your account.
+            <b>Self-hosters:</b> change the beneficiary constant before deploying so fees flow to your account, and make sure
+            you pre-fund the backend with at least 3&nbsp;trillion cycles before inviting users.
           `,
-          helper('We display the beneficiary preview inside the payments drawer so you always know where funds go.')
+          helper(
+            'We display the beneficiary preview inside the payments drawer and surface recent cycle burn metrics in the top navigation so you can spot low-fuel warnings early.'
+          )
         ),
       ])}
 
