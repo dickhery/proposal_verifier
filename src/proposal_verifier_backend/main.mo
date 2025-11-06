@@ -188,7 +188,7 @@ persistent actor verifier {
   let ANON : Principal = Principal.fromText("2vxsx-fae");
 
   // **** FEES (single flat fee for Fetch Proposal) ****
-  let FEE_FETCH_PROPOSAL_E8S : Nat64 = 20_000_000; // 0.2 ICP
+  let FEE_FETCH_PROPOSAL_E8S : Nat64 = 10_000_000; // 0.1 ICP
 
   // ICP transfer fee (e8s) for legacy ledger transfer
   let TRANSFER_FEE_E8S : Nat64 = 10_000; // 0.0001 ICP
