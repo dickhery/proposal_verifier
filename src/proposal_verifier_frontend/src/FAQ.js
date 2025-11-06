@@ -1,8 +1,19 @@
 // src/proposal_verifier_frontend/src/FAQ.js (elaborated)
 import { html, nothing } from 'lit-html';
 import { unsafeHTML } from 'lit-html/directives/unsafe-html.js';
+import {
+  FETCH_PROPOSAL_FEE_E8S,
+  NETWORK_FEE_E8S,
+  formatFeeIcp,
+  formatIcp,
+} from './fees.js';
 
 export function FAQView({ onBack }) {
+  const fetchFeeDisplay = formatFeeIcp(FETCH_PROPOSAL_FEE_E8S);
+  const networkFeeDisplay = formatIcp(NETWORK_FEE_E8S, {
+    minFractionDigits: 4,
+    maxFractionDigits: 4,
+  });
   return html`
     <main>
       <nav class="topbar">
@@ -688,7 +699,8 @@ export function FAQView({ onBack }) {
           '54) How do payments and deposits work?',
           `
             Every authenticated principal receives a <b>dedicated ICP deposit subaccount</b>. When you initiate a paid action,
-            the backend checks your balance, reserves the per-fetch fee (currently 0.1 ICP plus network fee), performs the work,
+            the backend checks your balance, reserves the per-fetch fee (currently ${fetchFeeDisplay} ICP plus the
+            ${networkFeeDisplay} ICP network fee), performs the work,
             and only then settles the transaction to the configured beneficiary. You can top up the subaccount from any wallet by
             sending ICP to the address displayed in the “Deposit” dialog. Deposits happen on the legacy ICP ledger so funds show
             up within a few blocks.

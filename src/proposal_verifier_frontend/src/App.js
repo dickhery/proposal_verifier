@@ -18,6 +18,12 @@ import {
   principalToAccountIdentifier,
 } from './utils.js';
 import { FAQView } from './FAQ.js';
+import {
+  FETCH_PROPOSAL_FEE_E8S,
+  NETWORK_FEE_E8S,
+  formatFeeIcp,
+  formatIcp,
+} from './fees.js';
 import { IDL } from '@dfinity/candid';
 import { AuthClient } from '@dfinity/auth-client';
 import { HttpAgent } from '@dfinity/agent';
@@ -672,7 +678,6 @@ function stringifyToCandid(obj, indent = '') {
   return String(obj); // fallback
 }
 
-const NETWORK_FEE_E8S = 10_000; // 0.0001 ICP
 const BENEFICIARY_ACCOUNT_IDENTIFIER =
   '2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e';
 
@@ -687,7 +692,7 @@ class App {
   userBalance = 0; // in e8s
 
   // DEFAULT FEES (Fetch Proposal requires 0.1 ICP = 10_000_000 e8s)
-  fees = { fetchProposal_e8s: 10_000_000n, httpOutcall_e8s: 0n }; // defaults, loaded from backend
+  fees = { fetchProposal_e8s: FETCH_PROPOSAL_FEE_E8S, httpOutcall_e8s: 0n }; // defaults, loaded from backend
 
   // Deposit/account state
   depositOwner = null; // canister principal (string)
@@ -907,7 +912,7 @@ class App {
   async #loadFees() {
     try {
       const f = await this.backend.getFees();
-      const MIN_FETCH_FEE_E8S = 10_000_000n; // 0.1 ICP
+      const MIN_FETCH_FEE_E8S = FETCH_PROPOSAL_FEE_E8S; // 0.1 ICP
       const fetch = f?.fetchProposal_e8s ?? MIN_FETCH_FEE_E8S;
       const outcall = f?.httpOutcall_e8s ?? 0n;
       this.fees = {
@@ -1360,10 +1365,10 @@ class App {
     const idEl = document.getElementById('proposalId');
     const id = parseInt(idEl.value);
 
-    const fetchFeeE8s = Number(this.fees?.fetchProposal_e8s ?? 0n);
-    const fetchFee = fetchFeeE8s / 1e8;
-    const formattedFetchFee = fetchFee.toFixed(fetchFee >= 1 ? 2 : 1);
-    const requiredE8s = fetchFeeE8s + NETWORK_FEE_E8S;
+    const fetchFeeRaw = this.fees?.fetchProposal_e8s ?? FETCH_PROPOSAL_FEE_E8S;
+    const fetchFeeE8s = Number(fetchFeeRaw ?? 0n);
+    const formattedFetchFee = formatFeeIcp(fetchFeeRaw);
+    const requiredE8s = fetchFeeE8s + Number(NETWORK_FEE_E8S);
     if (this.userBalance < requiredE8s) {
       const requiredIcp = (requiredE8s / 1e8).toFixed(4);
       alert(
@@ -1376,7 +1381,10 @@ class App {
       : '';
 
     const confirmed = window.confirm(
-      `Fetching this proposal will charge ${formattedFetchFee} ICP from your deposit balance (plus the 0.0001 ICP network fee). The fee is forwarded to account identifier ${BENEFICIARY_ACCOUNT_IDENTIFIER}. You must fund your deposit address first.${depositAddressMessage}\n\nDo you want to continue?`,
+      `Fetching this proposal will charge ${formattedFetchFee} ICP from your deposit balance (plus the ${formatIcp(
+        NETWORK_FEE_E8S,
+        { minFractionDigits: 4, maxFractionDigits: 4 },
+      )} ICP network fee). The fee is forwarded to account identifier ${BENEFICIARY_ACCOUNT_IDENTIFIER}. You must fund your deposit address first.${depositAddressMessage}\n\nDo you want to continue?`,
     );
     if (!confirmed) return;
 
@@ -4062,6 +4070,14 @@ ${linuxVerifyFromEncode}</pre>
         })
       : [];
 
+    const fetchFeeDisplay = formatFeeIcp(
+      this.fees?.fetchProposal_e8s ?? FETCH_PROPOSAL_FEE_E8S,
+    );
+    const networkFeeDisplay = formatIcp(NETWORK_FEE_E8S, {
+      minFractionDigits: 4,
+      maxFractionDigits: 4,
+    });
+
     const body = html`
       <nav class="topbar">
         <h1 class="grow">IC Proposal Verifier</h1>
@@ -4080,8 +4096,8 @@ ${linuxVerifyFromEncode}</pre>
                     <b>Backend cycles</b>: ${this.#formatCyclesDisplay(this.cycleBalance)}
                   </div>
                   <div style="font-size:12px;">
-                    <b>Fees</b>: Fetch Proposal = ${(Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(1)}
-                    ICP <em>(+ 0.0001 ICP network fee)</em>
+                    <b>Fees</b>: Fetch Proposal = ${fetchFeeDisplay}
+                    ICP <em>(+ ${networkFeeDisplay} ICP network fee)</em>
                   </div>
                   <div style="font-size:12px;">
                     <b>Average cycles burned</b>
@@ -4150,8 +4166,8 @@ ${linuxVerifyFromEncode}</pre>
                   from this address when you run billed actions (e.g. <b>Fetch Proposal</b>).
                 </p>
                 <p>
-                  Each Fetch Proposal transfer moves <b>0.1 ICP</b> (plus the 0.0001 ICP network fee)
-                  to account identifier
+                  Each Fetch Proposal transfer moves <b>${fetchFeeDisplay} ICP</b> (plus the
+                  ${networkFeeDisplay} ICP network fee) to account identifier
                   <code>${BENEFICIARY_ACCOUNT_IDENTIFIER}</code> to fund the canister's cycles.
                 </p>
 
