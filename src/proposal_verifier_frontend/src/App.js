@@ -4080,7 +4080,7 @@ ${linuxVerifyFromEncode}</pre>
                     <b>Backend cycles</b>: ${this.#formatCyclesDisplay(this.cycleBalance)}
                   </div>
                   <div style="font-size:12px;">
-                    <b>Fees</b>: Fetch Proposal = ${(Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(1)}
+                    <b>Fees</b>: Fetch Proposal = ${(Number(this.fees.fetchProposal_e8s) / 1e8).toFixed(3)}
                     ICP <em>(+ 0.0001 ICP network fee)</em>
                   </div>
                   <div style="font-size:12px;">
