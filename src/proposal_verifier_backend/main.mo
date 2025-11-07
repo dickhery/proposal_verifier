@@ -1057,23 +1057,87 @@ persistent actor verifier {
     null;
   };
 
+  func isGithubRepoChar(ch : Char) : Bool {
+    let code = Char.toNat32(ch);
+    let isDigit = (code >= 48 and code <= 57);
+    let isUpper = (code >= 65 and code <= 90);
+    let isLower = (code >= 97 and code <= 122);
+    let isSymbol = (code == 45 or code == 95 or code == 46); // - _ .
+    isDigit or isUpper or isLower or isSymbol;
+  };
+
+  func trimGithubComponent(raw : Text) : Text {
+    let chars = Text.toArray(raw);
+    let n = Array.size(chars);
+    if (n == 0) return raw;
+    var start : Nat = 0;
+    label trimStart while (start < n) {
+      if (isGithubRepoChar(chars[start])) {
+        break trimStart;
+      };
+      start += 1;
+    };
+    if (start >= n) return "";
+    var end : Nat = n;
+    label trimEnd while (end > start) {
+      if (isGithubRepoChar(chars[end - 1])) {
+        break trimEnd;
+      };
+      end -= 1;
+    };
+    textSliceFromChars(chars, start, end);
+  };
+
+  func stripGitSuffix(repo : Text) : Text {
+    let size = Text.size(repo);
+    if (size < 4) return repo;
+    let lower = Text.toLowercase(repo);
+    if (textSlice(lower, size - 4, size) == ".git") {
+      textSlice(repo, 0, size - 4);
+    } else {
+      repo;
+    };
+  };
+
+  func normalizeGithubRepoSlug(ownerRaw : Text, repoRaw : Text) : ?Text {
+    let owner = trimGithubComponent(ownerRaw);
+    let repoTrimmed = trimGithubComponent(repoRaw);
+    let repoCore = trimGithubComponent(stripGitSuffix(repoTrimmed));
+    if (Text.size(owner) == 0 or Text.size(repoCore) == 0) {
+      null;
+    } else {
+      ?(owner # "/" # repoCore);
+    };
+  };
+
   // Extract GitHub repo+commit if it appears in the summary
   func extractGithubRepoAndCommit(summary : Text) : (?Text, ?Text) {
     let marker = "https://github.com/";
     var posOpt = indexOf(summary, marker);
+    var repoOpt : ?Text = null;
+    var commitOpt : ?Text = null;
     label scan while (switch (posOpt) { case null { false }; case (?_) { true } }) {
       let pos = switch (posOpt) { case (?p) p; case null 0 };
       let sl = textSlice(summary, pos + Text.size(marker), Nat.min(Text.size(summary), pos + 200));
       let idxSlash = indexOf(sl, "/");
       switch (idxSlash) {
         case (?s1) {
-          let owner = textSlice(sl, 0, s1);
-          let rest = textSlice(sl, s1 + 1, Text.size(sl)); // tree|commit/...
+          let ownerRaw = textSlice(sl, 0, s1);
+          let rest = textSlice(sl, s1 + 1, Text.size(sl));
           let idxSlash2 = indexOf(rest, "/");
+          let repoSegment = switch (idxSlash2) {
+            case (?s2) { textSlice(rest, 0, s2) };
+            case null { rest };
+          };
+          switch (normalizeGithubRepoSlug(ownerRaw, repoSegment)) {
+            case (?slug) {
+              if (repoOpt == null) { repoOpt := ?slug };
+            };
+            case null {};
+          };
           switch (idxSlash2) {
             case (?s2) {
-              let repo = textSlice(rest, 0, s2);
-              let afterRepo = textSlice(rest, s2 + 1, Text.size(rest)); // tree|commit/...
+              let afterRepo = textSlice(rest, s2 + 1, Text.size(rest));
               let treeIdx = indexOf(afterRepo, "tree/");
               let commitIdx = indexOf(afterRepo, "commit/");
               let picked = switch (treeIdx, commitIdx) {
@@ -1086,18 +1150,18 @@ persistent actor verifier {
               };
               if (picked.0 != "") {
                 let afterKind = textSlice(afterRepo, picked.1 + Text.size(picked.0), Text.size(afterRepo));
+                let afterChars = Text.toArray(afterKind);
+                let m = Array.size(afterChars);
                 var j : Nat = 0;
-                let m = Text.size(afterKind);
                 label walk while (j < m) {
-                  let ch = Text.toArray(afterKind)[j];
-                  let c = Nat32.toNat(Char.toNat32(ch));
+                  let c = Nat32.toNat(Char.toNat32(afterChars[j]));
                   let isSep = (c == 47 or c == 63 or c == 35 or c == 41 or c == 32); // / ? # ) space
                   if (isSep) break walk;
                   j += 1;
                 };
-                let sha = textSlice(afterKind, 0, j);
-                if (Text.size(sha) >= 7 and Text.size(sha) <= 40) {
-                  return (?(owner # "/" # repo), ?sha);
+                let sha = textSliceFromChars(afterChars, 0, j);
+                if (Text.size(sha) >= 7 and Text.size(sha) <= 40 and isHex(sha)) {
+                  commitOpt := ?sha;
                 };
               };
             };
@@ -1106,12 +1170,15 @@ persistent actor verifier {
         };
         case null {};
       };
-      posOpt := switch (indexOf(textSlice(summary, pos + 1, Text.size(summary)), "https://github.com/")) {
+      if (repoOpt != null and commitOpt != null) {
+        break scan;
+      };
+      posOpt := switch (indexOf(textSlice(summary, pos + 1, Text.size(summary)), marker)) {
         case null null;
         case (?nx) ?(nx + pos + 1);
       };
     };
-    (null, null);
+    (repoOpt, commitOpt);
   };
 
   // Artifact hint in summaries produced by CI
