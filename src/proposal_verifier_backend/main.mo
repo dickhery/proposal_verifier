@@ -1906,6 +1906,25 @@ persistent actor verifier {
     };
   };
 
+  public shared ({ caller }) func fetchDidFile(repo : Text, commit : Text, path : Text) : async Result.Result<Text, Text> {
+    switch (requireAuth(caller)) {
+      case (#err(e)) return #err(e);
+      case (#ok(())) {};
+    };
+
+    if (Text.size(repo) == 0) return #err("Repository missing");
+    if (Text.size(commit) == 0) return #err("Commit hash missing");
+    if (Text.size(path) == 0) return #err("did file path missing");
+    if (Text.contains(path, #text "..")) return #err("Refusing to traverse parent directories in did path");
+    if (Text.contains(path, #text "://")) return #err("did path should be relative to repo root");
+
+    let url = "https://raw.githubusercontent.com/" # repo # "/" # commit # "/" # path;
+    switch (await fetchText(url)) {
+      case (?text) { #ok(text) };
+      case null { #err("Fetch failed for " # url) };
+    };
+  };
+
   // Deterministic fetcher (blocked for dynamic domains)
   public shared ({ caller }) func fetchDocument(url : Text) : async Result.Result<FetchResult, Text> {
     switch (requireAuth(caller)) {
