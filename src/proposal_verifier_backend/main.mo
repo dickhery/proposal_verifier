@@ -624,13 +624,18 @@ persistent actor verifier {
 
   // charge + forward (subtracts fee + transfer fee on success)
   func chargeAndForward(caller : Principal, fee_e8s : Nat64, purpose : Text) : async Result.Result<Nat64, Text> {
-    if (fee_e8s == 0) {
+    let effectiveFee : Nat64 = switch (purpose) {
+      case ("fetch proposal") FEE_FETCH_PROPOSAL_E8S;
+      case _ fee_e8s;
+    };
+
+    if (effectiveFee == 0) {
       return #ok(getBalanceInternal(caller));
     };
 
     let owner = Principal.fromActor(verifier);
     let sub = principalToSubaccount(caller);
-    let totalNeeded : Nat64 = fee_e8s + TRANSFER_FEE_E8S;
+    let totalNeeded : Nat64 = effectiveFee + TRANSFER_FEE_E8S;
 
     var balanceBefore : Nat64 = getBalanceInternal(caller);
 
@@ -655,7 +660,7 @@ persistent actor verifier {
       };
     };
 
-    switch (await forwardFeeToBeneficiary(sub, fee_e8s)) {
+    switch (await forwardFeeToBeneficiary(sub, effectiveFee)) {
       case (#ok(())) {
         let remainingNat : Nat = Nat64.toNat(balanceBefore) - Nat64.toNat(totalNeeded);
         let remaining64 : Nat64 = Nat64.fromNat(remainingNat);

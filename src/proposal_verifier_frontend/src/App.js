@@ -910,17 +910,47 @@ class App {
   }
 
   async #loadFees() {
+    const coerceToE8s = (value, fallback) => {
+      if (typeof value === 'bigint') return value;
+      if (typeof value === 'number') {
+        if (Number.isFinite(value) && value >= 0) {
+          try {
+            return BigInt(Math.trunc(value));
+          } catch (err) {
+            return fallback;
+          }
+        }
+        return fallback;
+      }
+      if (typeof value === 'string' && value.trim()) {
+        try {
+          return BigInt(value.trim());
+        } catch (err) {
+          return fallback;
+        }
+      }
+      return fallback;
+    };
+
     try {
       const f = await this.backend.getFees();
-      const MIN_FETCH_FEE_E8S = FETCH_PROPOSAL_FEE_E8S; // 0.1 ICP
-      const fetch = f?.fetchProposal_e8s ?? MIN_FETCH_FEE_E8S;
-      const outcall = f?.httpOutcall_e8s ?? 0n;
+      const rawFetch = coerceToE8s(f?.fetchProposal_e8s, FETCH_PROPOSAL_FEE_E8S);
+      if (rawFetch !== FETCH_PROPOSAL_FEE_E8S) {
+        console.warn(
+          `Unexpected fetch fee from backend (${rawFetch} e8s). Overriding to ${FETCH_PROPOSAL_FEE_E8S} e8s (0.1 ICP).`,
+        );
+      }
+      const rawOutcall = coerceToE8s(f?.httpOutcall_e8s, 0n);
       this.fees = {
-        fetchProposal_e8s: fetch < MIN_FETCH_FEE_E8S ? MIN_FETCH_FEE_E8S : fetch,
-        httpOutcall_e8s: outcall > 0n ? outcall : 0n,
+        fetchProposal_e8s: FETCH_PROPOSAL_FEE_E8S,
+        httpOutcall_e8s: rawOutcall > 0n ? rawOutcall : 0n,
       };
-    } catch {
-      // keep defaults
+    } catch (err) {
+      console.warn('Unable to load fee schedule, using defaults.', err?.message || err);
+      this.fees = {
+        fetchProposal_e8s: FETCH_PROPOSAL_FEE_E8S,
+        httpOutcall_e8s: 0n,
+      };
     }
   }
 
@@ -1370,7 +1400,7 @@ class App {
     const formattedFetchFee = formatFeeIcp(fetchFeeRaw);
     const requiredE8s = fetchFeeE8s + Number(NETWORK_FEE_E8S);
     if (this.userBalance < requiredE8s) {
-      const requiredIcp = (requiredE8s / 1e8).toFixed(4);
+      const requiredIcp = formatIcp(requiredE8s, { minFractionDigits: 4, maxFractionDigits: 4 });
       alert(
         `Insufficient deposit balance. You need at least ${requiredIcp} ICP (including the 0.0001 ICP network fee) available before fetching a proposal.\n\nFund your deposit address first.`,
       );
