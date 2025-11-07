@@ -40,7 +40,7 @@ The app's cycle burn is dominated by HTTPS outcalls in the backend canister (`pr
 Non-outcall operations (e.g., on-chain calls to NNS governance, local hashing) consume negligible cycles compared to outcalls.
 
 ### User Billing vs. Cycle Burn
-- **ICP fee**: Users pay a flat 0.2 ICP (20M e8s) per fetch via ledger transfer to a beneficiary account (`2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e`). This funds the canister's cycles indirectly.
+- **ICP fee**: Users pay a flat 0.09 ICP (9M e8s) per fetch via ledger transfer to a beneficiary account (`2ec3dee16236d389ebdff4346bc47d5faf31db393dac788e6a6ab5e10ade144e`). This funds the canister's cycles indirectly.
 - **Cycle source**: Outcalls burn cycles from the **canister's balance**, not the user's deposit. The app requires a minimum canister balance (3T cycles) before allowing fetches to avoid failures.
 - **Why separate?**: Fees ensure sustainable operation; cycles are escrowed per call for ICP's execution model.
 

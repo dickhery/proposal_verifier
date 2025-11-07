@@ -688,7 +688,7 @@ export function FAQView({ onBack }) {
           '54) How do payments and deposits work?',
           `
             Every authenticated principal receives a <b>dedicated ICP deposit subaccount</b>. When you initiate a paid action,
-            the backend checks your balance, reserves the per-fetch fee (currently 0.2 ICP plus network fee), performs the work,
+            the backend checks your balance, reserves the per-fetch fee (currently 0.09 ICP plus network fee), performs the work,
             and only then settles the transaction to the configured beneficiary. You can top up the subaccount from any wallet by
             sending ICP to the address displayed in the “Deposit” dialog. Deposits happen on the legacy ICP ledger so funds show
             up within a few blocks.
