@@ -2301,12 +2301,11 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
   #normalizeCandidExpression(expr) {
     const trimmed = (expr || '').trim();
     if (!trimmed) return this.#defaultCandidArg();
-    if (/^\s*\(.*\)\s*$/.test(trimmed)) return trimmed;
+    if (/^\s*\([\s\S]*\)\s*$/.test(trimmed)) return trimmed;
     return `(${trimmed})`;
   }
 
-  #buildDidcEncodeBase() {
-    const arg = this.#normalizeCandidExpression(this.#getCandidArgForCommands());
+  #buildDidcCommandPieces(argRepresentation) {
     const pieces = ['didc encode'];
     if (this.detectedDidPath) {
       pieces.push(`-d ${this.#shellQuote(this.detectedDidPath)}`);
@@ -2314,8 +2313,13 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     if (this.detectedCandidType) {
       pieces.push(`-t ${this.#shellQuote(this.detectedCandidType)}`);
     }
-    pieces.push(this.#shellQuote(arg));
+    pieces.push(argRepresentation);
     return pieces.join(' ');
+  }
+
+  #buildDidcEncodeBase() {
+    const arg = this.#normalizeCandidExpression(this.#getCandidArgForCommands());
+    return this.#buildDidcCommandPieces(this.#shellQuote(arg));
   }
 
   #buildDidcCommand() {
@@ -2324,21 +2328,38 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
 
   #buildPlatformCommand(platform) {
     const repoInfo = this.#computeRepoInfo();
-    const encodeNoNewline = `${this.#buildDidcEncodeBase()} | tr -d '\\n'`;
+    const candidExpr = this.#normalizeCandidExpression(this.#getCandidArgForCommands());
     const hashTool = platform === 'mac' ? 'shasum -a 256' : 'sha256sum';
+    const argFileName = 'proposal-args.candid';
+    const encodeViaFile = this.#buildDidcCommandPieces(`"$(cat ${argFileName})"`);
     const lines = [
       '# Clone repository and checkout the commit referenced in the proposal',
       `git clone ${repoInfo.cloneUrl}`,
       `cd ${repoInfo.repoDirName}`,
       repoInfo.checkoutCommand,
       '',
+      '# Save the detected Candid arguments exactly as text (avoids quoting issues)',
+      `cat <<'EOF' > ${argFileName}`,
+      candidExpr,
+      'EOF',
+      '',
       '# Encode the proposal arguments to hex (removes trailing newline)',
-      encodeNoNewline,
+      `HEX=$(${encodeViaFile} | tr -d '\\n')`,
+      "printf '%s\\n' \"$HEX\"",
       '',
       '# Convert hex back to bytes and hash (compare with proposal arg_hash)',
-      `${encodeNoNewline} | xxd -r -p | ${hashTool} | awk '{print $1}'`,
+      `printf '%s' "$HEX" | xxd -r -p | ${hashTool} | awk '{print $1}'`,
     ];
     return lines.join('\n');
+  }
+
+  #normalizeCommandForPlatform(command, platform) {
+    if (!command) return command;
+    if (platform !== 'mac') return command;
+    return command.replace(/\bsha(256|512)sum\b/gi, (match, group) => {
+      const algo = group === '512' ? '512' : '256';
+      return `shasum -a ${algo}`;
+    });
   }
 
   #applyAutoDetectedArg() {
@@ -2514,6 +2535,11 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     const macCommands = this.#buildPlatformCommand('mac');
     const linuxCommands = this.#buildPlatformCommand('linux');
     const encodeCommand = this.#buildDidcCommand();
+    const summaryMacCommand = hasRecommended
+      ? this.#normalizeCommandForPlatform(this.recommendedArgCmd, 'mac')
+      : '';
+    const showSummaryMacVariant =
+      hasRecommended && summaryMacCommand && summaryMacCommand !== this.recommendedArgCmd;
 
     const fillNull = () => {
       try {
@@ -2576,6 +2602,23 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
               >
                 Copy Command
               </button>
+              ${showSummaryMacVariant
+                ? html`
+                    <p style="margin:6px 0 0;">
+                      <em>
+                        macOS tip: replace <code>sha256sum</code> with <code>shasum -a 256</code> or use the
+                        macOS-ready version below.
+                      </em>
+                    </p>
+                    <pre class="cmd-pre">${summaryMacCommand}</pre>
+                    <button
+                      class="btn secondary"
+                      @click=${(e) => this.#handleCopy(e, summaryMacCommand, 'Copy macOS Summary Command')}
+                    >
+                      Copy macOS Summary Command
+                    </button>
+                  `
+                : ''}
             `
           : ''}
 
