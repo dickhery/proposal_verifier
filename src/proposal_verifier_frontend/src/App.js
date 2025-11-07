@@ -76,6 +76,12 @@ const RELEASE_URL_RE =
 const CANDID_PATTERN =
   /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
 
+const KNOWN_REPO_DID_PATHS = new Map([
+  ['dfinity/nns-dapp', ['nns-dapp-arg-mainnet.did', 'src/declarations/nns_dapp.did']],
+]);
+
+const MAX_AUTO_ARG_PREVIEW = 2000;
+
 const LONG_SESSION_TTL = 365n * 24n * 60n * 60n * 1_000_000_000n; // one year in nanoseconds
 
 const DASHBOARD_LABEL_VARIANTS = {
@@ -623,6 +629,107 @@ function extractArgVerificationCommand(summary) {
   return line ? line.trim() : null;
 }
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractCommandFlagValue(command, flag) {
+  if (!command || !flag) return null;
+  const pattern = new RegExp(`${escapeRegex(flag)}\s+((['"])([^'"]+)\\2|[^\s]+)`);
+  const match = command.match(pattern);
+  if (!match) return null;
+  return (match[3] || match[1] || '').trim();
+}
+
+function sanitizeDidPath(path) {
+  if (!path) return '';
+  let cleaned = String(path).trim();
+  if (!cleaned) return '';
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1);
+  }
+  cleaned = cleaned.replace(/\s+$/g, '');
+  return cleaned;
+}
+
+function extractDidcArgFromCommand(command) {
+  if (!command) return null;
+  const idx = command.toLowerCase().indexOf('didc encode');
+  if (idx < 0) return null;
+  const tail = command.slice(idx);
+  const matches = [...tail.matchAll(/(['"])([\s\S]*?)\1/g)];
+  if (!matches.length) return null;
+  const [, , arg] = matches[matches.length - 1];
+  const trimmed = (arg || '').trim();
+  return trimmed ? trimmed.slice(0, MAX_AUTO_ARG_PREVIEW) : null;
+}
+
+function detectDidPathsInText(text) {
+  if (!text || typeof text !== 'string') return [];
+  const regex = /([A-Za-z0-9_./-]+\.did)/g;
+  const paths = new Set();
+  let match;
+  while ((match = regex.exec(text))) {
+    const candidate = (match[1] || '').trim();
+    if (!candidate) continue;
+    if (/^https?:/i.test(candidate)) continue;
+    paths.add(candidate.replace(/["']+/g, ''));
+  }
+  return Array.from(paths);
+}
+
+function extractCandidSnippetFromText(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const codeBlocks = [...trimmed.matchAll(/```(?:candid)?\s*([\s\S]*?)```/gi)];
+  for (const [, block] of codeBlocks) {
+    const candidate = extractCandidSnippetFromText(block);
+    if (candidate) return candidate;
+  }
+
+  const argLabelMatch = trimmed.match(/argument[^:]*:\s*(\([^\n\r]+\)|record\s*\{[\s\S]*?\})/i);
+  if (argLabelMatch && argLabelMatch[1] && CANDID_PATTERN.test(argLabelMatch[1])) {
+    return argLabelMatch[1].trim();
+  }
+
+  const parenMatches = trimmed.match(/\((?:[^)(]+|\([^)(]*\))*\)/g);
+  if (parenMatches) {
+    for (const candidate of parenMatches) {
+      if (CANDID_PATTERN.test(candidate)) {
+        return candidate.trim().slice(0, MAX_AUTO_ARG_PREVIEW);
+      }
+    }
+  }
+
+  const recordMatch = trimmed.match(/(record|variant|vec)\s*\{[\s\S]*?\}/i);
+  if (recordMatch && recordMatch[0]) {
+    const candidate = recordMatch[0].trim();
+    if (CANDID_PATTERN.test(candidate)) {
+      return candidate.slice(0, MAX_AUTO_ARG_PREVIEW);
+    }
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (CANDID_PATTERN.test(line)) {
+      let block = line;
+      if (/\{\s*$/.test(line)) {
+        for (let j = i + 1; j < lines.length; j += 1) {
+          block += `\n${lines[j]}`;
+          if (lines[j].includes('}')) break;
+        }
+      }
+      return block.trim().slice(0, MAX_AUTO_ARG_PREVIEW);
+    }
+  }
+
+  return null;
+}
+
 // Simple Candid encoders for common cases
 function encodeNullHex() {
   const bytes = IDL.encode([IDL.Null], [null]);
@@ -718,6 +825,15 @@ class App {
   lastFetchCyclesBurned = null;
   fetchCyclesAverage = null;
   fetchCyclesCount = 0;
+  autoDetectedArg = null; // { text, source }
+  autoDetectedArgHint = '';
+  detectedDidPath = null;
+  detectedDidSource = null;
+  detectedCandidType = null;
+  detectedCandidTypeSource = null;
+  fetchedDidFile = null; // { path, content, repo, commit }
+  didFetchError = '';
+  argInputTouched = false;
 
   expectedHash = null; // expected wasm/release hash (from sources)
   expectedHashSource = null;
@@ -1467,28 +1583,24 @@ class App {
 
       this.argInputHint = '';
       this.argInputType = 'text';
-      if (this.extractedArgText && CANDID_PATTERN.test(this.extractedArgText)) {
-        this.argInputCurrent = this.extractedArgText;
-        this.argInputType = 'candid';
-        this.argInputHint =
-          'Detected Candid-like text. Encode with didc (or use the quick buttons), then paste the hex under "Hex Bytes".';
-      } else if (
-        this.payloadSnippetFromDashboard &&
-        CANDID_PATTERN.test(this.payloadSnippetFromDashboard)
-      ) {
-        this.argInputCurrent = this.payloadSnippetFromDashboard.trim();
-        this.argInputType = 'candid';
-        this.argInputHint =
-          'Detected possible Candid in payload snippet. Encode with didc before hashing.';
-      } else {
-        this.argInputCurrent = '';
-      }
+      this.argInputCurrent = '';
+      this.argInputTouched = false;
+      this.autoDetectedArg = null;
+      this.autoDetectedArgHint = '';
+      this.detectedDidPath = null;
+      this.detectedDidSource = null;
+      this.detectedCandidType = null;
+      this.detectedCandidTypeSource = null;
+      this.fetchedDidFile = null;
+      this.didFetchError = '';
 
       this.#resolveHashesFromSources();
 
       await this.#prefillFromIcApi(id);
 
       this.#resolveHashesFromSources();
+
+      await this.#detectArgAndDidHints({ allowInputOverride: true, fetchDid: true });
 
       // Commit check: prefer browser request to avoid burning canister cycles
       this.commitStatus = '';
@@ -2062,6 +2174,7 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
   #handleArgInputChange(e) {
     const v = (e?.target?.value ?? '').trim();
     this.argInputCurrent = v;
+    this.argInputTouched = true;
 
     // Helpful hints and mistake detection
     if (/^blob\s*"/i.test(v)) {
@@ -2094,15 +2207,324 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     return null;
   }
 
+  #defaultCandidArg() {
+    const type = (this.proposalData?.proposalType || '').toLowerCase();
+    if (type.includes('protocolcanistermanagement') || type.includes('networkcanistermanagement')) {
+      return '()';
+    }
+    return '(null)';
+  }
+
+  #shellQuote(value) {
+    const str = String(value ?? '');
+    return `'${str.replace(/'/g, "'\\''")}'`;
+  }
+
+  #normalizeRepoSlug(repo) {
+    if (!repo) return '';
+    let value = repo.trim();
+    if (!value) return '';
+    value = value.replace(/^https?:\/\/github\.com\//i, '');
+    value = value.replace(/^git@github\.com:/i, '');
+    value = value.replace(/\.git$/i, '');
+    value = value.replace(/^\//, '');
+    return value;
+  }
+
+  #inferRepoDirName(source) {
+    if (!source) return '<repo-directory>';
+    if (source.startsWith('git@')) {
+      const afterColon = source.split(':')[1] || '';
+      const candidate = afterColon.split('/').pop() || '';
+      const sanitized = candidate.replace(/\.git$/i, '');
+      return sanitized || '<repo-directory>';
+    }
+    try {
+      const url = new URL(source);
+      const segments = url.pathname.split('/').filter(Boolean);
+      if (segments.length) {
+        const candidate = segments[segments.length - 1].replace(/\.git$/i, '');
+        return candidate || '<repo-directory>';
+      }
+    } catch (err) {
+      const parts = source.split('/').filter(Boolean);
+      if (parts.length) {
+        const candidate = parts[parts.length - 1].replace(/\.git$/i, '');
+        if (!candidate.includes('<') && candidate !== 'github.com') {
+          return candidate;
+        }
+      }
+    }
+    return '<repo-directory>';
+  }
+
+  #computeRepoInfo() {
+    const repoRaw = (this.proposalData?.extractedRepo || '').trim();
+    const repoSlug = this.#normalizeRepoSlug(repoRaw);
+    const hasUrlPrefix = /^https?:/i.test(repoRaw) || repoRaw.startsWith('git@');
+    const cloneUrl = repoRaw
+      ? hasUrlPrefix
+        ? repoRaw
+        : `https://github.com/${repoSlug}`
+      : 'https://github.com/<org>/<repo>';
+    const repoDirName = this.#inferRepoDirName(cloneUrl);
+    const commitHash = (this.proposalData?.extractedCommit || '').trim();
+    const checkoutCommand = commitHash ? `git checkout ${commitHash}` : 'git checkout <commit-hash>';
+    return {
+      repoRaw,
+      repoSlug,
+      cloneUrl,
+      repoDirName,
+      checkoutCommand,
+    };
+  }
+
+  #getCandidArgForCommands() {
+    if (this.autoDetectedArg?.text) {
+      return this.autoDetectedArg.text.trim();
+    }
+    if (this.argInputType === 'candid' && this.argInputCurrent) {
+      return this.argInputCurrent.trim();
+    }
+    const fromCommand = extractDidcArgFromCommand(this.recommendedArgCmd);
+    if (fromCommand) return fromCommand.trim();
+    if (this.extractedArgText) {
+      return this.extractedArgText.trim();
+    }
+    const payloadCandidate = extractCandidSnippetFromText(this.payloadSnippetFromDashboard);
+    if (payloadCandidate) return payloadCandidate.trim();
+    const summaryCandidate = extractCandidSnippetFromText(this.proposalData?.summary || '');
+    if (summaryCandidate) return summaryCandidate.trim();
+    return this.#defaultCandidArg();
+  }
+
+  #normalizeCandidExpression(expr) {
+    const trimmed = (expr || '').trim();
+    if (!trimmed) return this.#defaultCandidArg();
+    if (/^\s*\([\s\S]*\)\s*$/.test(trimmed)) return trimmed;
+    return `(${trimmed})`;
+  }
+
+  #buildDidcCommandPieces(argRepresentation) {
+    const pieces = ['didc encode'];
+    if (this.detectedDidPath) {
+      pieces.push(`-d ${this.#shellQuote(this.detectedDidPath)}`);
+    }
+    if (this.detectedCandidType) {
+      pieces.push(`-t ${this.#shellQuote(this.detectedCandidType)}`);
+    }
+    pieces.push(argRepresentation);
+    return pieces.join(' ');
+  }
+
+  #buildDidcEncodeBase() {
+    const arg = this.#normalizeCandidExpression(this.#getCandidArgForCommands());
+    return this.#buildDidcCommandPieces(this.#shellQuote(arg));
+  }
+
   #buildDidcCommand() {
-    // This builder is for producing HEX BYTES to paste, not hashing directly.
-    // `didc encode` already outputs hex text, so no `xxd -p` here.
-    const input = (this.argInputCurrent || '').trim();
-    if (!input) return `didc encode '()' | tr -d '\\n'`;
-    // If the user typed full tuple already "(...)", avoid double parens:
-    const candidExpr = /^\s*\(.*\)\s*$/.test(input) ? input : `(${input})`;
-    return `didc encode '${candidExpr}' | tr -d '\\n'`;
-    // Note: for verification, turn hex back into bytes with `xxd -r -p` before hashing.
+    return `${this.#buildDidcEncodeBase()} | tr -d '\\n'`;
+  }
+
+  #buildPlatformCommand(platform) {
+    const repoInfo = this.#computeRepoInfo();
+    const candidExpr = this.#normalizeCandidExpression(this.#getCandidArgForCommands());
+    const hashTool = platform === 'mac' ? 'shasum -a 256' : 'sha256sum';
+    const argFileName = 'proposal-args.candid';
+    const encodeViaFile = this.#buildDidcCommandPieces(`"$(cat ${argFileName})"`);
+    const lines = [
+      '# Clone repository and checkout the commit referenced in the proposal',
+      `git clone ${repoInfo.cloneUrl}`,
+      `cd ${repoInfo.repoDirName}`,
+      repoInfo.checkoutCommand,
+      '',
+      '# Save the detected Candid arguments exactly as text (avoids quoting issues)',
+      `cat <<'EOF' > ${argFileName}`,
+      candidExpr,
+      'EOF',
+      '',
+      '# Encode the proposal arguments to hex (removes trailing newline)',
+      `HEX=$(${encodeViaFile} | tr -d '\\n')`,
+      "printf '%s\\n' \"$HEX\"",
+      '',
+      '# Convert hex back to bytes and hash (compare with proposal arg_hash)',
+      `printf '%s' "$HEX" | xxd -r -p | ${hashTool} | awk '{print $1}'`,
+    ];
+    return lines.join('\n');
+  }
+
+  #normalizeCommandForPlatform(command, platform) {
+    if (!command) return command;
+    if (platform !== 'mac') return command;
+    return command.replace(/\bsha(256|512)sum\b/gi, (match, group) => {
+      const algo = group === '512' ? '512' : '256';
+      return `shasum -a ${algo}`;
+    });
+  }
+
+  #applyAutoDetectedArg() {
+    if (!this.autoDetectedArg) return;
+    this.argInputCurrent = this.autoDetectedArg.text.trim();
+    this.argInputType = 'candid';
+    this.argInputHint = this.autoDetectedArgHint || 'Auto-filled from proposal context. Encode with didc before hashing.';
+    this.argInputTouched = false;
+    this.#render();
+  }
+
+  async #maybeFetchDidFile() {
+    if (!this.detectedDidPath) {
+      this.fetchedDidFile = null;
+      this.didFetchError = '';
+      return;
+    }
+    const repoRaw = (this.proposalData?.extractedRepo || '').trim();
+    const commitHash = (this.proposalData?.extractedCommit || '').trim();
+    const repoSlug = this.#normalizeRepoSlug(repoRaw);
+    if (!repoSlug || !commitHash) {
+      this.fetchedDidFile = null;
+      this.didFetchError = repoSlug ? '' : 'Repository missing for didc -d path.';
+      return;
+    }
+    const existing = this.fetchedDidFile;
+    if (
+      existing &&
+      existing.repo === repoSlug &&
+      existing.commit === commitHash &&
+      existing.path === this.detectedDidPath
+    ) {
+      return;
+    }
+    if (typeof this.backend.fetchDidFile !== 'function') {
+      this.didFetchError = '';
+      console.warn('fetchDidFile not available on backend actor; regenerate declarations after backend update.');
+      return;
+    }
+    try {
+      const result = await this.backend.fetchDidFile(repoSlug, commitHash, this.detectedDidPath);
+      if (result?.ok) {
+        this.fetchedDidFile = {
+          path: this.detectedDidPath,
+          content: result.ok,
+          repo: repoSlug,
+          commit: commitHash,
+        };
+        this.didFetchError = '';
+      } else {
+        this.fetchedDidFile = null;
+        this.didFetchError = result?.err || `Unable to fetch ${this.detectedDidPath}`;
+      }
+    } catch (err) {
+      this.fetchedDidFile = null;
+      this.didFetchError = err?.message || 'Failed to fetch did file';
+    }
+  }
+
+  #describeSource(source) {
+    switch (source) {
+      case 'backend:extracted':
+        return 'the backend payload extract';
+      case 'summary:command':
+        return 'the summary command block';
+      case 'dashboard:payload':
+        return 'the dashboard payload snippet';
+      case 'summary:text':
+        return 'the proposal summary';
+      case 'knownRepo':
+        return 'repository defaults';
+      default:
+        return 'proposal context';
+    }
+  }
+
+  async #detectArgAndDidHints({ allowInputOverride = false, fetchDid = false } = {}) {
+    const candidates = [];
+    if (this.extractedArgText && CANDID_PATTERN.test(this.extractedArgText)) {
+      candidates.push({ text: this.extractedArgText.trim(), source: 'backend:extracted' });
+    }
+    const commandCandidate = extractDidcArgFromCommand(this.recommendedArgCmd);
+    if (commandCandidate && CANDID_PATTERN.test(` ${commandCandidate} `)) {
+      candidates.push({ text: commandCandidate.trim(), source: 'summary:command' });
+    }
+    const payloadCandidate = extractCandidSnippetFromText(this.payloadSnippetFromDashboard);
+    if (payloadCandidate) {
+      candidates.push({ text: payloadCandidate.trim(), source: 'dashboard:payload' });
+    }
+    const summaryCandidate = extractCandidSnippetFromText(this.proposalData?.summary || '');
+    if (summaryCandidate) {
+      candidates.push({ text: summaryCandidate.trim(), source: 'summary:text' });
+    }
+
+    const uniqueArg = new Map();
+    for (const item of candidates) {
+      if (!item.text) continue;
+      if (!uniqueArg.has(item.text)) uniqueArg.set(item.text, item.source);
+    }
+    const [firstText, firstSource] = uniqueArg.size ? uniqueArg.entries().next().value : [null, null];
+    if (firstText) {
+      this.autoDetectedArg = { text: firstText, source: firstSource };
+      this.autoDetectedArgHint = `Auto-detected Candid args from ${this.#describeSource(firstSource)}. Encode with didc before hashing.`;
+      if (!this.argInputTouched || allowInputOverride) {
+        this.argInputCurrent = firstText;
+        this.argInputType = 'candid';
+        this.argInputHint = this.autoDetectedArgHint;
+      }
+    } else if (!this.argInputTouched && allowInputOverride) {
+      this.argInputCurrent = '';
+      this.argInputType = 'text';
+      this.argInputHint = '';
+      this.autoDetectedArg = null;
+      this.autoDetectedArgHint = '';
+    } else {
+      this.autoDetectedArg = null;
+      this.autoDetectedArgHint = '';
+    }
+
+    const didCandidates = [];
+    const fromCommand = sanitizeDidPath(extractCommandFlagValue(this.recommendedArgCmd, '-d'));
+    if (fromCommand) {
+      didCandidates.push({ path: fromCommand, source: 'summary:command' });
+    }
+    detectDidPathsInText(this.proposalData?.summary || '').forEach((p) =>
+      didCandidates.push({ path: sanitizeDidPath(p), source: 'summary:text' }),
+    );
+    detectDidPathsInText(this.payloadSnippetFromDashboard || '').forEach((p) =>
+      didCandidates.push({ path: sanitizeDidPath(p), source: 'dashboard:payload' }),
+    );
+    const repoSlug = this.#normalizeRepoSlug(this.proposalData?.extractedRepo || '');
+    if (repoSlug && KNOWN_REPO_DID_PATHS.has(repoSlug)) {
+      for (const known of KNOWN_REPO_DID_PATHS.get(repoSlug)) {
+        didCandidates.push({ path: sanitizeDidPath(known), source: 'knownRepo' });
+      }
+    }
+    const uniqueDid = new Map();
+    for (const item of didCandidates) {
+      if (!item.path) continue;
+      if (!uniqueDid.has(item.path)) uniqueDid.set(item.path, item.source);
+    }
+    if (uniqueDid.size) {
+      const [path, source] = uniqueDid.entries().next().value;
+      this.detectedDidPath = path;
+      this.detectedDidSource = source;
+    } else {
+      this.detectedDidPath = null;
+      this.detectedDidSource = null;
+    }
+
+    const typeHint = extractCommandFlagValue(this.recommendedArgCmd, '-t');
+    if (typeHint) {
+      const sanitized = typeHint.replace(/^['"]|['"]$/g, '').trim();
+      if (sanitized) {
+        this.detectedCandidType = sanitized;
+        this.detectedCandidTypeSource = 'summary:command';
+      }
+    } else if (!this.detectedCandidTypeSource) {
+      this.detectedCandidType = null;
+      this.detectedCandidTypeSource = null;
+    }
+
+    if (fetchDid && this.detectedDidPath) {
+      await this.#maybeFetchDidFile();
+    }
   }
 
   #renderArgShortcuts() {
@@ -2110,6 +2532,14 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     if (!p) return null;
 
     const hasRecommended = !!this.recommendedArgCmd;
+    const macCommands = this.#buildPlatformCommand('mac');
+    const linuxCommands = this.#buildPlatformCommand('linux');
+    const encodeCommand = this.#buildDidcCommand();
+    const summaryMacCommand = hasRecommended
+      ? this.#normalizeCommandForPlatform(this.recommendedArgCmd, 'mac')
+      : '';
+    const showSummaryMacVariant =
+      hasRecommended && summaryMacCommand && summaryMacCommand !== this.recommendedArgCmd;
 
     const fillNull = () => {
       try {
@@ -2137,14 +2567,15 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
       }
     };
 
-    // Hash-verify command (platform aware)
-    const candidExpr = (() => {
-      const v = (this.argInputCurrent || '').trim();
-      if (!v) return '(null)'; // default helpful example
-      return /^\s*\(.*\)\s*$/.test(v) ? v : `(${v})`;
-    })();
-    const macVerify = `didc encode '${candidExpr}' | xxd -r -p | shasum -a 256 | awk '{print $1}'`;
-    const linuxVerify = `didc encode '${candidExpr}' | xxd -r -p | sha256sum | awk '{print $1}'`;
+    const detectedButton = this.autoDetectedArg
+      ? html`<button class="btn secondary" @click=${() => this.#applyAutoDetectedArg()}>
+          Use detected args (${this.#describeSource(this.autoDetectedArg.source)})
+        </button>`
+      : null;
+
+    const autoHint = this.autoDetectedArgHint
+      ? html`<p style="margin:6px 0 0;"><em>${this.autoDetectedArgHint}</em></p>`
+      : '';
 
     return html`
       <details>
@@ -2156,7 +2587,10 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
           <button class="btn secondary" @click=${fillUnit}>
             Arg is <code>()</code> (auto-encode)
           </button>
+          ${detectedButton}
         </div>
+
+        ${autoHint}
 
         ${hasRecommended
           ? html`
@@ -2168,21 +2602,47 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
               >
                 Copy Command
               </button>
+              ${showSummaryMacVariant
+                ? html`
+                    <p style="margin:6px 0 0;">
+                      <em>
+                        macOS tip: replace <code>sha256sum</code> with <code>shasum -a 256</code> or use the
+                        macOS-ready version below.
+                      </em>
+                    </p>
+                    <pre class="cmd-pre">${summaryMacCommand}</pre>
+                    <button
+                      class="btn secondary"
+                      @click=${(e) => this.#handleCopy(e, summaryMacCommand, 'Copy macOS Summary Command')}
+                    >
+                      Copy macOS Summary Command
+                    </button>
+                  `
+                : ''}
             `
           : ''}
 
-        <p><b>Hash-verify yourself:</b></p>
-        <pre class="cmd-pre"># macOS
-${macVerify}
+        <p><b>didc encode (hex output, no newline):</b></p>
+        <pre class="cmd-pre">${encodeCommand}</pre>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <button class="btn secondary" @click=${(e) => this.#handleCopy(e, encodeCommand, 'Copy didc Command')}>
+            Copy didc Command
+          </button>
+        </div>
 
-# Linux
-${linuxVerify}</pre>
+        <p><b>macOS verification commands:</b></p>
+        <pre class="cmd-pre">${macCommands}</pre>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+          <button class="btn secondary" @click=${(e) => this.#handleCopy(e, macCommands, 'Copy macOS Commands')}>
+            Copy macOS Commands
+          </button>
+        </div>
+
+        <p><b>Linux verification commands:</b></p>
+        <pre class="cmd-pre">${linuxCommands}</pre>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button
-            class="btn secondary"
-            @click=${(e) => this.#handleCopy(e, macVerify + '\n\n' + linuxVerify, 'Copy Commands')}
-          >
-            Copy Both
+          <button class="btn secondary" @click=${(e) => this.#handleCopy(e, linuxCommands, 'Copy Linux Commands')}>
+            Copy Linux Commands
           </button>
         </div>
       </details>
@@ -2296,52 +2756,44 @@ ${linuxVerify}</pre>
 
   #renderArgSection(p) {
     const didcCmd = this.#buildDidcCommand();
-    const encodeLine =
-      this.#recommendedEncodeCommand() ||
-      "didc encode -d path/to/service.did -t '(candid-type)' \"$UPGRADE_ARG\"";
+    const encodeLine = this.#buildDidcCommand();
     const macVerifyFromEncode = `${encodeLine} | xxd -r -p | shasum -a 256 | awk '{print $1}'`;
     const linuxVerifyFromEncode = `${encodeLine} | xxd -r -p | sha256sum | awk '{print $1}'`;
-    const repoUrl = (p?.extractedRepo || '').trim();
-    const commitHash = (p?.extractedCommit || '').trim();
-    const defaultRepoUrl = repoUrl || 'https://github.com/<org>/<repo>';
-    const cloneCommand =
-      defaultRepoUrl.startsWith('http') || defaultRepoUrl.startsWith('git@')
-        ? `git clone ${defaultRepoUrl}`
-        : `git clone https://github.com/${defaultRepoUrl.replace(/^\/?/, '')}`;
-    const repoDirName = (() => {
-      const source = defaultRepoUrl;
-      if (source.startsWith('git@')) {
-        const afterColon = source.split(':')[1] || '';
-        const candidate = afterColon.split('/').pop() || '';
-        const sanitized = candidate.replace(/\.git$/i, '');
-        return sanitized || '<repo-directory>';
-      }
-      try {
-        const url = new URL(source);
-        const segments = url.pathname.split('/').filter(Boolean);
-        if (segments.length) {
-          const candidate = segments[segments.length - 1].replace(/\.git$/i, '');
-          return candidate || '<repo-directory>';
-        }
-      } catch (err) {
-        const parts = source.split('/').filter(Boolean);
-        if (parts.length) {
-          const candidate = parts[parts.length - 1].replace(/\.git$/i, '');
-          if (!candidate.includes('<') && candidate !== 'github.com') {
-            return candidate;
-          }
-        }
-      }
-      return '<repo-directory>';
-    })();
-    const checkoutCommand = commitHash ? `git checkout ${commitHash}` : 'git checkout <commit-hash>';
-    const checkoutSnippet = `${cloneCommand}\ncd ${repoDirName}\n${checkoutCommand}`;
+    const repoInfo = this.#computeRepoInfo();
+    const checkoutSnippet = `git clone ${repoInfo.cloneUrl}\ncd ${repoInfo.repoDirName}\n${repoInfo.checkoutCommand}`;
     const expectedArgHash = this.argHash || p?.proposal_arg_hash || 'the expected arg hash';
+    const candidExprDisplay = this.#normalizeCandidExpression(this.#getCandidArgForCommands());
+    const argEnvLine = `UPGRADE_ARG=${this.#shellQuote(candidExprDisplay)}`;
+    const didSourceLabel = this.detectedDidSource ? this.#describeSource(this.detectedDidSource) : null;
+    const detectedDidBlock = this.detectedDidPath
+      ? html`<p>
+          <b>Detected did file:</b> <code>${this.detectedDidPath}</code>
+          ${didSourceLabel ? html`<span>(${didSourceLabel})</span>` : ''}. Included automatically in the commands above.
+        </p>`
+      : '';
+    const didPreview = this.fetchedDidFile
+      ? (() => {
+          const previewText = String(this.fetchedDidFile.content || '');
+          return html`<details class="type-guidance">
+            <summary><b>Fetched .did preview</b></summary>
+            <p>
+              Pulled from <code>${this.fetchedDidFile.repo}@${(this.fetchedDidFile.commit || '').slice(0, 12)}</code>.
+              Save as <code>${this.fetchedDidFile.path}</code> and pass with <code>-d</code> if you need the interface locally.
+            </p>
+            <pre class="cmd-pre">${previewText.slice(0, 800)}</pre>
+          </details>`;
+        })()
+      : this.didFetchError
+      ? html`<p class="error">Unable to fetch did file automatically: ${this.didFetchError}</p>`
+      : '';
 
     return html`
       <section>
         <h2>Verify Arg Hash (Binary)</h2>
         ${this.#renderArgShortcuts()}
+
+        ${detectedDidBlock}
+        ${didPreview}
 
         <details>
           <summary>How to choose an input</summary>
@@ -2444,8 +2896,8 @@ ${linuxVerify}</pre>
             <li>
               <strong>Check out the proposal sources.</strong>
               <ul>
-                <li><b>Repository:</b> <code>${defaultRepoUrl}</code></li>
-                <li><b>Commit:</b> <code>${commitHash || '<commit-hash>'}</code></li>
+                <li><b>Repository:</b> <code>${(p?.extractedRepo || repoInfo.cloneUrl).trim()}</code></li>
+                <li><b>Commit:</b> <code>${(p?.extractedCommit || '').trim() || '<commit-hash>'}</code></li>
               </ul>
               <p>Run:</p>
               <pre class="cmd-pre">${checkoutSnippet}</pre>
@@ -2453,10 +2905,10 @@ ${linuxVerify}</pre>
             <li>
               <strong>Encode the Candid args to hex bytes.</strong>
               <p>
-                Copy the Candid text from the proposal summary or repo into a shell variable (single quotes
-                keep multi-line values intact):
+                Copy the detected Candid text into a shell variable (single quotes keep multi-line values intact). Adjust if the
+                proposal expects a different payload:
               </p>
-              <pre class="cmd-pre">UPGRADE_ARG='(paste Candid text here)'</pre>
+              <pre class="cmd-pre">${argEnvLine}</pre>
               <p>Then encode it with <code>didc</code> (drop any hashing pipes from summary commands):</p>
               <pre class="cmd-pre">${encodeLine}</pre>
               <p>The command prints the raw hex bytes—paste that output into the <b>Hex Bytes</b> box below.</p>
