@@ -793,8 +793,8 @@ class App {
   userPrincipal = null;
   userBalance = 0; // in e8s
 
-  // DEFAULT FEES (Fetch Proposal requires 0.09 ICP = 9_000_000 e8s)
-  fees = { fetchProposal_e8s: 9_000_000n, httpOutcall_e8s: 0n }; // defaults, loaded from backend
+  // DEFAULT FEES (Fetch Proposal requires 0.03 ICP = 3_000_000 e8s)
+  fees = { fetchProposal_e8s: 3_000_000n, httpOutcall_e8s: 0n }; // defaults, loaded from backend
 
   // Deposit/account state
   depositOwner = null; // canister principal (string)
@@ -1023,7 +1023,7 @@ class App {
   async #loadFees() {
     try {
       const f = await this.backend.getFees();
-      const MIN_FETCH_FEE_E8S = 9_000_000n; // 0.09 ICP
+      const MIN_FETCH_FEE_E8S = 3_000_000n; // 0.03 ICP
       const fetch = f?.fetchProposal_e8s ?? MIN_FETCH_FEE_E8S;
       const outcall = f?.httpOutcall_e8s ?? 0n;
       this.fees = {
@@ -4602,7 +4602,7 @@ ${linuxVerifyFromEncode}</pre>
                   from this address when you run billed actions (e.g. <b>Fetch Proposal</b>).
                 </p>
                 <p>
-                  Each Fetch Proposal transfer moves <b>0.09 ICP</b> (plus the 0.0001 ICP network fee)
+                  Each Fetch Proposal transfer moves <b>0.03 ICP</b> (plus the 0.0001 ICP network fee)
                   to account identifier
                   <code>${BENEFICIARY_ACCOUNT_IDENTIFIER}</code> to fund the canister's cycles.
                 </p>
