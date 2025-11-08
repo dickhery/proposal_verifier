@@ -3756,6 +3756,27 @@ ${linuxVerifyFromEncode}</pre>
     if (!p) return null;
     const headerDefaults = this.#computeReportHeaderDefaults() || {};
     const headerFinal = this.#applyReportOverrides(headerDefaults);
+    const typeKey = p.proposalType;
+    const storedTypeChecklist = this.typeChecklists?.get?.(typeKey);
+    const fallbackTypeChecklist = getTypeChecklistItems(typeKey).map((item) => ({
+      ...item,
+      checked: this.checklist?.[item.key],
+    }));
+    const combinedChecklist =
+      Array.isArray(storedTypeChecklist) && storedTypeChecklist.length
+        ? storedTypeChecklist
+        : fallbackTypeChecklist;
+    const checklistItemsForExport = combinedChecklist.map((item) => {
+      const notApplicable = item.key === 'docHash' && this.docExpectation === 'not_applicable';
+      const checked =
+        typeof item.checked === 'boolean' ? item.checked : !!(this.checklist && this.checklist[item.key]);
+      return {
+        key: item.key,
+        label: item.label,
+        checked,
+        notApplicable,
+      };
+    });
     return {
       id: p.id,
       type: p.proposalType,
@@ -3782,6 +3803,7 @@ ${linuxVerifyFromEncode}</pre>
       verificationSteps: this.verificationSteps,
       requiredTools: this.requiredTools,
       checklist: this.checklist,
+      checklistItems: checklistItemsForExport,
       commitStatus: this.commitStatus,
       argMatch: this.hashMatch,
       docResults: this.docResults,
@@ -3908,13 +3930,29 @@ ${linuxVerifyFromEncode}</pre>
       .filter((url) => typeof url === 'string' && url.trim().length)
       .map((url) => `  - ${url.trim()}`);
 
-    const checklistEntries = Object.entries(data.checklist || {}).filter(([key]) => key !== 'manual');
-    const checklistLines = checklistEntries.map(([key, value]) => {
-      if (key === 'docHash' && this.docExpectation === 'not_applicable') {
-        return `  - ${key}: N/A`;
-      }
-      return `  - ${key}: ${value ? 'Completed' : 'Incomplete'}`;
-    });
+    const docExpectationState = data.docExpectation;
+    const exportChecklistItems = Array.isArray(data.checklistItems) ? data.checklistItems : [];
+    let checklistLines = [];
+    if (exportChecklistItems.length) {
+      checklistLines = exportChecklistItems.map((item) => {
+        if (item.notApplicable || (item.key === 'docHash' && docExpectationState === 'not_applicable')) {
+          return `  - ${item.label}: N/A`;
+        }
+        const icon = item.checked ? '✅' : '❌';
+        const status = item.checked ? 'Completed' : 'Incomplete';
+        return `  - ${item.label}: ${icon} ${status}`;
+      });
+    } else {
+      const checklistEntries = Object.entries(data.checklist || {}).filter(([key]) => key !== 'manual');
+      checklistLines = checklistEntries.map(([key, value]) => {
+        if (key === 'docHash' && docExpectationState === 'not_applicable') {
+          return `  - ${key}: N/A`;
+        }
+        const icon = value ? '✅' : '❌';
+        const status = value ? 'Completed' : 'Incomplete';
+        return `  - ${key}: ${icon} ${status}`;
+      });
+    }
 
     const lines = [];
     if (headerText) {
@@ -4044,17 +4082,28 @@ ${linuxVerifyFromEncode}</pre>
       .map((d) => `- ${d.name}: ${d.hash || 'N/A'}`)
       .join('\n');
     md += `## Documents\n- Expectation: ${docExpectationLabel}\n${docLines || 'None'}\n\n`;
-    const checklistEntries = Object.entries(data.checklist || {}).filter(
-      ([key]) => key !== 'manual',
-    );
-    const checklistSection = checklistEntries
-      .map(([k, v]) => {
-        if (k === 'docHash' && this.docExpectation === 'not_applicable') {
-          return `- ${k}: N/A`;
-        }
-        return `- ${k}: ${v ? '✅' : '❌'}`;
-      })
-      .join('\n');
+    const exportChecklistItems = Array.isArray(data.checklistItems) ? data.checklistItems : [];
+    let checklistSection = '';
+    if (exportChecklistItems.length) {
+      checklistSection = exportChecklistItems
+        .map((item) => {
+          if (item.notApplicable || (item.key === 'docHash' && data.docExpectation === 'not_applicable')) {
+            return `- ${item.label}: N/A`;
+          }
+          return `- ${item.label}: ${item.checked ? '✅' : '❌'}`;
+        })
+        .join('\n');
+    } else {
+      const checklistEntries = Object.entries(data.checklist || {}).filter(([key]) => key !== 'manual');
+      checklistSection = checklistEntries
+        .map(([k, v]) => {
+          if (k === 'docHash' && data.docExpectation === 'not_applicable') {
+            return `- ${k}: N/A`;
+          }
+          return `- ${k}: ${v ? '✅' : '❌'}`;
+        })
+        .join('\n');
+    }
     md += `## Checklist\n${checklistSection || 'None'}\n\n`;
     md += `## Steps/Tools\n- **Steps**: ${data.verificationSteps || 'N/A'}\n- **Tools**: ${data.requiredTools || 'N/A'}\n\n`;
     md += `## Rebuild Script\n\`\`\`bash\n${data.rebuildScript || 'N/A'}\n\`\`\`\n`;
@@ -4429,19 +4478,33 @@ ${linuxVerifyFromEncode}</pre>
     }
 
     addSectionHeading('Checklist');
-    const checklistEntries = Object.entries(data.checklist || {}).filter(([key]) => key !== 'manual');
-    if (checklistEntries.length) {
-      checklistEntries.forEach(([key, value]) => {
-        if (key === 'docHash' && this.docExpectation === 'not_applicable') {
-          addParagraph(`• ${key}: N/A`, { indent: 12 });
+    const exportChecklistItems = Array.isArray(data.checklistItems) ? data.checklistItems : [];
+    const docExpectationState = data.docExpectation;
+    if (exportChecklistItems.length) {
+      exportChecklistItems.forEach((item) => {
+        if (item.notApplicable || (item.key === 'docHash' && docExpectationState === 'not_applicable')) {
+          addParagraph(`• ${item.label}: N/A`, { indent: 12 });
         } else {
-          const icon = value ? '✅' : '❌';
-          const label = value ? 'Completed' : 'Incomplete';
-          addParagraph(`• ${key}: ${icon} ${label}`, { indent: 12 });
+          const icon = item.checked ? '✅' : '❌';
+          const label = item.checked ? 'Completed' : 'Incomplete';
+          addParagraph(`• ${item.label}: ${icon} ${label}`, { indent: 12 });
         }
       });
     } else {
-      addParagraph('No checklist items recorded.', { indent: 12, fontStyle: 'italic' });
+      const checklistEntries = Object.entries(data.checklist || {}).filter(([key]) => key !== 'manual');
+      if (checklistEntries.length) {
+        checklistEntries.forEach(([key, value]) => {
+          if (key === 'docHash' && docExpectationState === 'not_applicable') {
+            addParagraph(`• ${key}: N/A`, { indent: 12 });
+          } else {
+            const icon = value ? '✅' : '❌';
+            const label = value ? 'Completed' : 'Incomplete';
+            addParagraph(`• ${key}: ${icon} ${label}`, { indent: 12 });
+          }
+        });
+      } else {
+        addParagraph('No checklist items recorded.', { indent: 12, fontStyle: 'italic' });
+      }
     }
 
     addSectionHeading('Steps & Tools');
