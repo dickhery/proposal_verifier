@@ -1478,7 +1478,7 @@ class App {
 
     const fetchFeeE8s = Number(this.fees?.fetchProposal_e8s ?? 0n);
     const fetchFee = fetchFeeE8s / 1e8;
-    const formattedFetchFee = fetchFee.toFixed(fetchFee >= 1 ? 2 : 1);
+    const formattedFetchFee = fetchFee.toFixed(fetchFee >= 1 ? 2 : 3);
     const requiredE8s = fetchFeeE8s + NETWORK_FEE_E8S;
     if (this.userBalance < requiredE8s) {
       const requiredIcp = (requiredE8s / 1e8).toFixed(4);
