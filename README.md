@@ -60,7 +60,7 @@ This project was developed to claim a bounty for creating resources and guides o
 The app is structured as a standard dfx project:
 - **Backend (`src/proposal_verifier_backend`)**: Handles authenticated, billed actions like fetching proposals from the NNS Governance canister, performing HTTPS outcalls (e.g., to GitHub/ic-api), and managing user balances/fees.
 - **Frontend (`src/proposal_verifier_frontend`)**: User interface for inputting proposal IDs, displaying extracted data, verifying hashes, and exporting reports. Uses Lit-HTML for rendering and AuthClient for II login.
-- **Billing Model**: Fetches are billed (0.09 ICP + network fee) from user deposits, forwarded to a beneficiary (customizable) to fund cycles.
+- **Billing Model**: Fetches are billed (0.03 ICP + network fee) from user deposits, forwarded to a beneficiary (customizable) to fund cycles.
 - **Data Flow**: User logs in → Deposits ICP → Fetches proposal → Extracts/validates → Exports report.
 
 The project supports various proposal types (e.g., ProtocolCanisterManagement, IcOsVersionDeployment) with type-specific guidance, checklists, and rebuild scripts.
@@ -227,7 +227,7 @@ This ensures fees go to you, not the default. Verify in code: Search for `BENEFI
 ### Fetching a Proposal
 
 - Enter ID (e.g., 138924).
-- Confirm fee (0.09 ICP + 0.0001 network).
+- Confirm fee (0.03 ICP + 0.0001 network).
 - App fetches/extracts data.
 
 ### Verifying Hashes
