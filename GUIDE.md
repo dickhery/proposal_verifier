@@ -334,12 +334,88 @@ Mismatches: Wrong Candid; missing .did; double-hex (decode first).
 
 ## 12. Publishing a verification report
 
+Publishing your verification report is an essential and highly impactful step in the proposal verification process. It not only solidifies your own findings but also contributes to the broader ICP community's collective intelligence and decision-making. By sharing your report publicly, you enable other neuron holders, developers, node providers, and governance participants to review your work, reproduce your steps, and make more informed voting choices—whether to adopt, reject, or seek clarifications on a proposal. In a decentralized system like the NNS, where transparency is paramount, public reports help prevent oversights, build accountability for proposal submitters (e.g., the DFINITY Foundation or community members), and create a historical archive of verifications that can be referenced for future proposals or audits.
+
+Positive reports can build confidence in a proposal, encouraging broader adoption, while reports highlighting mismatches or concerns can prompt discussions, fixes, or rejections before execution. Remember, the ICP ecosystem thrives on "trust, but verify"—your published report empowers others to verify your verification, distributing trust and reducing single points of failure. Even if you're a beginner, sharing your results (positive or negative) adds value; it shows the community is active and vigilant.
+
+To make publishing easy and structured, we strongly recommend using the **Proposal Verifier App** (available at [https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/](https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/)) to build and export your report. The app automates much of the formatting, includes checklists, and generates ready-to-share files in JSON, Markdown, or PDF formats. This ensures consistency, saves time, and reduces errors compared to manual writing. Once exported, post it on the [DFINITY Developer Forum](https://forum.dfinity.org/) under the **Governance** category with the sub-category **NNS Proposal Discussion**. Tag the post with the proposal's topic (e.g., "ProtocolCanisterManagement") for better visibility.
+
+Below, we'll walk through detailed instructions on creating your report in the app, customizing it, exporting it, and publishing on the forum. If you prefer manual reporting without the app, you can still use the template at the end, but the app is faster and more beginner-friendly.
+
+### Step-by-Step: Building and Exporting a Report in the Proposal Verifier App
+
+The app is designed to guide you through verification while building your report in the background. It fetches proposal data, extracts key elements (like hashes and links), performs automated checks (e.g., commit existence via GitHub API), and lets you verify args/docs interactively. Here's how to use it for reporting:
+
+1. **Access the App and Log In:**
+   - Visit [https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/](https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/) in your browser (it's hosted on ICP, so no downloads needed).
+   - Click "Login with Internet Identity" (II). If you're new to II, it's ICP's secure, passwordless authentication system—create an anchor (your digital identity) by following the prompts. This is required for billed actions like fetching proposals. For details on II, see the [Internet Identity Specification](https://internetcomputer.org/docs/current/references/ii-spec).
+   - After login, you'll see your principal ID (a unique identifier) and balance info. If your balance is low, deposit ICP to the shown subaccount address (app-derived for security). Minimum for one fetch: ~0.03 ICP + 0.0001 ICP network fee.
+
+2. **Fetch the Proposal:**
+   - Enter the Proposal ID (e.g., 12345) in the input field and click "Fetch Proposal."
+   - The app will bill the fee (forwarded to the beneficiary for cycle funding) and query the NNS governance canister to retrieve details like summary, title, URL, and payload.
+   - It automatically parses the summary for repos, commits (40-hex strings), hashes (64-hex SHA-256), documents (bullet points like "* Declaration: hash"), and URLs. This populates sections like "Extracted Repo," "Extracted Commit," "Onchain WASM Hash," and "Extracted Docs."
+   - If extraction misses something (e.g., due to unusual formatting), you can manually add/override in later steps.
+
+3. **Perform Verifications (Building Report Data):**
+   - **Commit Check:** The app auto-verifies if the extracted commit exists in the repo using the GitHub REST API (browser-first for free, canister if needed). Status shows as ✅ or ❌—a green check means it's valid.
+   - **Arg Hash Verification:** In the "Verify Arg Hash" section, paste arguments (detects Candid/hex/vec/blob). Select mode, then click "Verify." App computes SHA-256 and compares to `arg_hash`. Use quick buttons for common args like `(null)` or `()`. If Candid, app suggests `didc` commands—run locally and paste hex.
+   - **Document Verification:** For extracted docs with hashes, upload files (e.g., PDFs from wiki) or fetch URLs (via secure HTTP outcalls). App hashes (SHA-256) and matches, showing previews and ✅/❌. For manual additions, use the "Manual document hash check" box.
+   - **Type-Specific Checklist:** App shows a checklist (e.g., "Fetch Proposal," "Commit Check") with auto-updates (e.g., ✅ after successful arg verify). Manually check items like "Rebuild & Compare."
+   - **Add Notes/Overrides:** In "Export Report," fill missing details (e.g., proposer) or override auto-filled ones. Add "Reviewer Notes" for insights (e.g., "Build took 15min; no issues").
+   - As you verify, the app tracks progress, updating the report preview with hashes, matches, and logs.
+
+4. **Export the Report:**
+   - Once verifications are done, go to "Export Report."
+   - Preview the summary (auto-filled with ID, type, hashes, etc.).
+   - Click:
+     - **Download JSON:** Full raw data (e.g., for scripting/archiving).
+     - **Download Markdown:** Formatted report (easy to paste on forum; includes code blocks/hashes).
+     - **Download PDF:** Styled document (professional; great for sharing).
+     - **Export Metadata (.txt):** Candid-like text of full proposal info.
+   - Exports include: Header, hashes (computed vs. expected), args (Candid/hashed), build logs (if added), conclusion (based on checklist), and artifacts (e.g., previews).
+   - Tip: Markdown is best for forum—copy/paste directly.
+
+Using the app ensures your report is structured, evidence-based, and reproducible, while saving time on formatting.
+
+### Publishing on the DFINITY Developer Forum
+
+Once exported, share on [DFINITY Developer Forum](https://forum.dfinity.org/)—the official hub for ICP discussions. Posting here maximizes visibility, as it's monitored by DFINITY, node providers, and voters.
+
+1. **Prepare Your Post:**
+   - Log in/sign up at [https://forum.dfinity.org/](https://forum.dfinity.org/).
+   - Category: **Governance** > **NNS Proposal Discussion**.
+   - Tags: Proposal topic (e.g., "IcOsVersionElection"), "verification-report," ID (e.g., "proposal-12345").
+   - Title: "Verification Report for Proposal #12345: [Title] – [Verified/Mismatch]".
+
+2. **Structure the Post:**
+   - Paste exported Markdown/PDF content as the body.
+   - Add intro: "I've verified Proposal #12345 using the Proposal Verifier App. Here's the exported report: [paste Markdown]. Key findings: [summary]."
+   - Embed images/screenshots (upload to forum).
+   - If JSON/PDF, attach files.
+
+3. **Encourage Engagement:**
+   - "Reproduce my steps and share your results!"
+   - Tag @dfinity or proposer.
+   - Call to action: "Should we adopt? Vote here: [NNS link]."
+
+4. **Best Practices:**
+   - Be objective: Evidence first.
+   - Timing: Post early in voting.
+   - Etiquette: Assume good intent; suggest fixes.
+
+### Manual Report Template (If Not Using App)
+
+If preferring manual, use this template:
+
 * **Header**: ID, title, links, repo/commit, proposer.
 * **Hashes**: Computed vs expected.
 * **Args**: Candid, hashed.
 * **Build log**: Commands/outputs.
 * **Conclusion**: Verified/mismatch + notes.
 * **Artifacts**: Logs/code blocks.
+
+Publishing via app/forum strengthens ICP—your contribution matters!
 
 ---
 
