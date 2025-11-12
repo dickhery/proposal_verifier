@@ -231,55 +231,113 @@ F --> G["Mark checklist & export report"]
 
 ## 7. Full step-by-step (manual method)
 
-This is the foundational way—do everything yourself. It's detailed for beginners; follow exactly.
+This section provides a complete, foundational guide to verifying NNS proposals manually, without relying on any apps or automated tools. It's designed for absolute beginners, assuming you have no prior experience with command-line tools, blockchain concepts, or verification processes. We'll explain every step in detail, including why it's important, potential pitfalls, troubleshooting tips, and exact commands with examples. By following this, you'll learn the core principles of verification while gaining hands-on experience.
 
-1. **Find the proposal**: Open [NNS dapp](https://nns.ic0.app/) or [Dashboard](https://dashboard.internetcomputer.org/). Search by ID (e.g., 12345). Note status—if open, verify before voting ends. Copy summary/payload.
+Manual verification builds your understanding of ICP governance and ensures you can spot issues independently. It's more time-consuming than using the Proposal Verifier app (see Section 8), but it's reproducible on any machine and doesn't require login or fees. Always cross-reference with the proposal's summary, the [ICP Verify Proposals Tutorial](https://internetcomputer.org/docs/current/building-apps/governing-apps/nns/concepts/proposals/verify-proposals), and Section 3 (Proposal Types) for type-specific details.
 
-2. **Determine type/topic**: From summary or Dashboard. Use Section 3 table. E.g., if "InstallCode", focus on Wasm/args.
+Before starting, ensure your tools are set up (see Section 5: Setup & Dependencies). You'll need a terminal (e.g., Command Prompt on Windows, Terminal on macOS/Linux) and basic navigation skills (e.g., `cd folder` to change directories). If a command fails, copy the error and search it online (e.g., "git clone error").
 
-3. **Extract key info**: Scan summary for repo (e.g., "github.com/dfinity/ic"), commit (40-hex), hashes (64-hex for SHA-256), args (Candid text), docs (URLs/hashes).
+1. **Find the proposal**: The first step is locating the proposal details. Proposals are publicly viewable on multiple platforms, which helps cross-verify information. Start by obtaining the proposal ID (a number like 12345) from discussions on the [DFINITY Developer Forum](https://forum.dfinity.org/c/governance/20) or announcements.
+   - Open the [NNS dapp](https://nns.ic0.app/) in your browser. This is the official voting interface—search for the ID or browse open proposals. Click the proposal to view its title, summary (description), status (e.g., "Open" for voting), proposer (principal ID), and payload (data/code). Copy the full summary and any linked URLs. Note the voting deadline—if it's "Open," verify quickly to influence votes.
+   - Alternatively, use the [ICP Dashboard](https://dashboard.internetcomputer.org/governance). Search by ID; it shows detailed payload (e.g., JSON-like args for code upgrades). Copy the "Payload" section if available—it's often more structured than the summary.
+   - Via command line (advanced but tamper-proof): Use dfx to query directly: `dfx canister call rrkah-fqaaa-aaaaa-aaaaq-cai get_proposal_info '(12345)' --network ic`. This calls the governance canister (see attached IDL for details) and outputs Candid data—parse for summary/hashes.
+   - Why? Ensures you're working with the canonical on-chain data. Pitfall: If status is "Adopted" or "Executed," verification is post-facto but still useful for audits. Save everything to a text file for reference.
 
-4. **Clone & checkout repo**: `git clone https://github.com/<org>/<repo>`. `cd <repo>`. `git checkout <commit>`. Verify: `git log -1` shows commit.
+2. **Determine type/topic**: Every proposal belongs to a topic (e.g., ProtocolCanisterManagement) and type (e.g., InstallCode), which dictates what to verify (e.g., code vs. text). Refer to Section 3 (Proposal types & what to verify for each) or the attached proposal-topics-and-types.txt for a full list.
+   - From the summary or Dashboard: Look for keywords like "InstallCode" (code upgrade), "Motion" (text poll), or "AddNodeProvider" (participant). The Dashboard often labels "Proposal Type" explicitly.
+   - Why? Topics guide focus—e.g., high-reward ones like Governance need deep review; binary-heavy like IcOsVersionElection require builds. Example: If "Upgrade the governance canister," it's ProtocolCanisterManagement → InstallCode, so prioritize Wasm/args.
+   - Pitfall: Misclassification leads to wrong checks (e.g., hashing text as binary). Cross-check with [Proposal Topics Docs](https://learn.internetcomputer.org/hc/en-us/articles/34140518658068-Proposal-Topics-and-Types).
 
-5. **Rebuild binaries**: Follow repo README. E.g., for IC: `./ci/container/build-ic.sh -c`. Use Docker for isolation: `docker run --rm -v $(pwd):/ic ubuntu:22.04 /ic/build.sh`. Output in artifacts/.
+3. **Extract key info**: Scan the summary/payload for verifiable elements. This is like detective work—look for patterns in the text.
+   - Common items: Repo (e.g., "https://github.com/dfinity/ic" or "dfinity/ic"), commit (40-hex string like "abcdef1234567890abcdef1234567890abcdef12"), hashes (64-hex SHA-256 like "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"), args (Candid like `(record { key = value })`), docs (bullets like "* Declaration: hash" or URLs).
+   - How: Copy summary to a text editor. Search for "github.com" (repo), 40-hex near "commit" or "checkout", 64-hex near "hash" or "sha256". For args, look for `(record ...)` in payload. Use tools like grep: `echo "summary text" | grep -o '[0-9a-f]{64}'` for hashes.
+   - Why? These are the building blocks—wrong extraction invalidates everything. Example: In "git checkout abcdef123456 from https://github.com/dfinity/ic", extract repo="dfinity/ic", commit="abcdef123456".
+   - Pitfall: Summaries vary—use [Base Text Module](https://internetcomputer.org/docs/current/motoko/base/Text) if scripting in Motoko, or simple regex in code (see attached base-text.txt). If unclear, check forum link.
 
-6. **Compute hashes**: `sha256sum artifacts/*.wasm.gz`. For raw: unzip first. Compare to proposal "wasm_module_hash" or Dashboard "expected hash".
+4. **Clone & checkout repo**: Download the source code at the exact version.
+   - Command: `git clone https://github.com/<org>/<repo>` (e.g., `git clone https://github.com/dfinity/ic`). This creates a local copy.
+   - Navigate: `cd <repo>` (e.g., `cd ic`).
+   - Checkout: `git checkout <commit>` (e.g., `git checkout abcdef123456`).
+   - Verify: `git log -1`—output should show the commit hash, author, date. Matches proposal? Good.
+   - Why? Ensures you're verifying the claimed code—wrong commit could hide changes.
+   - Pitfall: Clone fails? Check URL (add .git if needed); network issues—use VPN. Invalid commit? Proposal error—report. Tools: Git ([Download](https://git-scm.com/downloads)).
 
-7. **Verify args**: Find Candid (e.g., `(record { ... })`). Encode: `didc encode '(args)' > hex.txt`. Bytes: `xxd -r -p hex.txt > args.bin`. Hash: `sha256sum args.bin`. Match "arg_hash".
+5. **Rebuild binaries**: Compile code to binaries (e.g., Wasm) matching proposal.
+   - Follow repo README (e.g., for IC: dependencies like Rust/Docker).
+   - Command: `./ci/container/build-ic.sh -c` (IC-specific; others vary, e.g., `cargo build --release` for Rust).
+   - Use Docker: `docker run --rm -v $(pwd):/ic ubuntu:22.04 /ic/ci/container/build-ic.sh -c`. Why isolation? Prevents host deps from interfering; reproducible.
+   - Output: In `artifacts/` or `target/release/`. Locate Wasm/PDFs.
+   - Why? Confirms no backdoors—rebuild from source, not trust pre-built.
+   - Pitfall: Missing deps? Install (e.g., `apt install rustc`). Long build? Use powerful machine. Errors? Check README/forum. Tools: Docker ([Guide](https://docs.docker.com/desktop/install/)).
 
-8. **Verify docs**: Download PDFs. `sha256sum file.pdf`. Match proposal hashes.
+6. **Compute hashes**: Generate fingerprints of rebuilt files.
+   - Command: `sha256sum artifacts/*.wasm.gz` (Linux/Mac: `shasum -a 256`). Outputs "hash  file".
+   - For raw: `gunzip file.gz; sha256sum file.wasm`.
+   - Compare: To proposal "wasm_module_hash" or Dashboard "expected hash". Exact match (case-insensitive).
+   - Why? Detects tampering—if hashes differ, file altered.
+   - Pitfall: Gz vs. raw? Check proposal (often gz). Wrong file? Verify path from README. Tools: sha256sum/shasum ([Expanded above](#2-tools-and-setup-in-depth-installation-for-all-platforms)).
 
-9. **Check extras**: Principals? Query registry. Motions? Read implications.
+7. **Verify args**: Check configuration data (Candid) hashes to `arg_hash`.
+   - Find args: In summary/payload (e.g., `(record { ... })`). If null: `(null)` or `()`.
+   - Encode: `didc encode '(args)' > hex.txt` (add `-d file.did` for interface; download .did from repo).
+   - Bytes: `xxd -r -p hex.txt > args.bin`.
+   - Hash: `sha256sum args.bin`.
+   - Compare: To "arg_hash".
+   - Why? Args configure upgrades—mismatch could change behavior.
+   - Pitfall: Wrong Candid? Exact match, including spaces. Empty/null differ ([GUIDE.md](https://github.com/dickhery/proposal_verifier/blob/main/GUIDE.md#104-nullempty-arguments-and-common-gotchas)). No .did? Fetch from repo. Tools: didc, xxd ([Install](https://github.com/dfinity/candid/releases)).
 
-10. **Report mismatches**: If issues, reject & post on forum.
+8. **Verify docs**: Confirm supporting files (e.g., PDFs) unchanged.
+   - Download: From proposal URLs (e.g., wiki/forum).
+   - Hash: `sha256sum file.pdf`.
+   - Compare: To proposal hashes.
+   - Why? Docs prove identity/compliance—tampering invalidates.
+   - Pitfall: Wrong file? Exact URL. Large files? Tools handle. Tools: curl (`curl -O url`), sha256sum.
 
-Full examples: [ICP verify tutorial](https://internetcomputer.org/docs/building-apps/governing-apps/nns/concepts/proposals/verify-proposals).
+9. **Check extras**: Verify non-binary elements (e.g., principals, motions).
+   - Principals: Query registry: `dfx canister call rno2w-sqaaa-aaaaa-aaacq-cai get_subnet '(principal "<id>")' --network ic`.
+   - Motions: Read summary/implications—does it align? Check forum.
+   - Participants: Hash PDFs as above.
+   - Why? Covers all aspects—e.g., wrong principal could misroute funds.
+   - Pitfall: Use IDL for queries. Tools: dfx.
+
+10. **Report mismatches**: Document and share findings.
+    - If issues (e.g., hash mismatch): Note details (logs/hashes).
+    - Reject: Vote no on NNS.
+    - Post on [Forum](https://forum.dfinity.org/) (Governance > NNS Discussion): Title "Verification Report #12345 - Mismatch". Include template from Section 12.
+    - Why? Alerts community—prevents bad proposals.
+    - Pitfall: Be factual. Use app for structured reports.
+
+Full examples: [ICP verify tutorial](https://internetcomputer.org/docs/current/building-apps/governing-apps/nns/concepts/proposals/verify-proposals). For app-assisted, see Section 8.
 
 ---
 
 ## 8. Full step-by-step (Proposal Verifier app)
 
-The app streamlines manual steps—parses, fetches, checks automatically where possible. Deploy your own for customization.
+The Proposal Verifier app is a powerful, user-friendly tool deployed directly on the ICP blockchain (at [https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/](https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/)) that streamlines the manual verification process by automating data fetching, parsing, and basic checks where possible. It queries the NNS governance canister, extracts key elements like repositories, commits, hashes, arguments, and URLs from the proposal summary, performs automated verifications (e.g., commit existence via GitHub API), and allows you to manually verify arguments and documents with built-in hashing tools. The app also provides type-specific checklists, guidance, and report exports to make verification accessible even for complete beginners.
 
-1. **Access app**: [Live](https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/). Login with Internet Identity ([II docs](https://internetcomputer.org/docs/references/ii-spec)).
+Using the app reduces errors, saves time, and ensures consistency—it's especially helpful if you're new, as it handles complex parsing and provides visual feedback (e.g., ✅/❌ for matches). However, it complements (doesn't replace) manual checks: always reproduce critical steps like rebuilding binaries locally for full confidence. The app requires login for billed actions (fetching proposals costs ~0.03 ICP + 0.0001 ICP network fee, forwarded to fund cycles). You can deploy your own instance for customization (see step 10).
 
-2. **Fund deposit**: Copy address from app. Send ICP (e.g., via wallet). Refresh balances. Fees: 0.03 ICP/fetch + network (0.0001 ICP).
+Follow these steps to verify a proposal using the app. We'll explain each in detail, including what happens behind the scenes, why it's important, and tips for success. Assume you've set up tools from Section 5 if needed for manual parallels.
 
-3. **Enter ID & fetch**: Input proposal ID. Click "Fetch" (billed). App queries governance, parses summary (repo/commit/hashes/args/URLs).
+1. **Access app**: Visit the [live app](https://g5ige-nyaaa-aaaap-an4rq-cai.icp0.io/) in your browser—it's hosted on ICP, so no installation required. The app loads quickly and shows a simple interface with a proposal ID input. To use billed features (like fetching), click "Login with Internet Identity" ([II docs](https://internetcomputer.org/docs/current/references/ii-spec)). Internet Identity (II) is ICP's secure, passwordless authentication system—it creates a unique principal (your digital ID) tied to your device/biometrics. If this is your first time, follow the on-screen prompts to create an "anchor" (a numeric ID you'll reuse). Why login? It enables secure billing from your deposit subaccount and attributes actions to you. After login, you'll see your principal and balance (initially 0)—refresh if needed. Tip: If login fails, check your browser (Chrome/Firefox work best) or clear cache. This step sets up your session for verification.
 
-4. **Review extracted**: Check repo/commit (auto-verifies via GitHub API). Links/docs listed.
+2. **Fund deposit**: Once logged in, the app displays your unique deposit address (a 64-hex string, e.g., "a1b2c3...") under "Fund your balance." Copy this address—it's a subaccount derived from your principal for secure, isolated deposits. Send ICP to it using any wallet (e.g., NNS dapp: paste into "To" field; or dfx: `dfx ledger transfer <address> --icp 0.5 --memo 0 --network ic`). Start with ~0.1 ICP to cover a few fetches (each costs 0.03 ICP + ~0.0001 ICP network fee). After sending, click "Refresh balances" in the app—it queries the ICP ledger (via ICRC-1 standard) to update your on-chain subaccount balance, credited total, and available amount. Why fund? Fetching is billed to cover cycles for HTTPS outcalls (e.g., GitHub checks) and queries—unused funds stay in your subaccount. The fee forwards to the beneficiary (hardcoded for cycle funding). Tip: Confirm transaction on a block explorer like [dashboard.internetcomputer.org](https://dashboard.internetcomputer.org/). If balance doesn't update, wait ~1-2 minutes or check for typos. Pitfall: Don't send to your principal directly—use the subaccount address.
 
-5. **Verify commit**: App shows status (exists?). If fail, manual: browse GitHub.
+3. **Enter ID & fetch**: In the app's main input, enter the proposal ID (a number like 12345, from NNS/Dashboard/forum). Click "Fetch Proposal" (billed action—confirm if prompted). Behind the scenes: The app calls the governance canister's `get_proposal_info` method (via dfx-generated actor, see attached main.mo and governance IDL), deducts the fee from your balance, and parses the returned summary/payload for repo (e.g., "dfinity/ic"), commit (40-hex), hashes (64-hex for Wasm/args/docs), Candid args (e.g., `(record {...})`), and URLs/links. It displays extracted data in sections like "Proposal Details" (ID/type/title/summary) and "Extracted Info" (repo/commit/hashes/docs). Why? This automates data gathering, reducing manual copy-paste errors. The parsed elements populate verification tools (e.g., commit check). Tip: If extraction misses something (unusual formatting), note it manually. Check "Document Expectation" (e.g., "expected" for PDFs). Pitfall: Invalid ID? App shows error—double-check on NNS.
 
-6. **Verify docs**: Upload files—app hashes/compares. Or fetch URLs (text/JSON).
+4. **Review extracted**: The app shows parsed elements: repo/commit (with link if possible), hashes (onchain Wasm/arg), doc URL, artifact path, proposal type, URLs list, and docs table (name/hash). Scroll through—hover for previews. Auto-verifies basics like type detection (e.g., "ProtocolCanisterManagement"). Why? Confirms app parsed correctly; spot anomalies early (e.g., wrong commit). Use this as your verification hub—links open in new tabs for manual checks (e.g., browse repo on GitHub). Tip: If repo/commit wrong, it's a proposal issue—report. Cross-check with Dashboard ([https://dashboard.internetcomputer.org/proposal/ID](https://dashboard.internetcomputer.org/governance)). Pitfall: Dynamic URLs? App notes if non-deterministic (see HTTP outcalls docs).
 
-7. **Verify args**: Paste Candid/hex. App encodes (didc helpers), hashes, compares to arg_hash.
+5. **Verify commit**: In "Extracted Info," see "Commit Status" (e.g., "✅ Commit exists on dfinity/ic@abcdef12"). App auto-checks via GitHub API (browser for free; canister if blocked)—queries `https://api.github.com/repos/<repo>/commits/<commit>` (see attached github-rest-api-javascript.txt). If "❌," manual: Click link or browse GitHub ([https://github.com/<repo>/commit/<commit>](https://github.com/dfinity/ic/commit/abcdef123456)). Why? Ensures commit real/not tampered—fake commits could hide malicious code. Tip: If fail, check repo privacy/network. Pitfall: Rate limits? Use app's canister mode (billed outcall).
 
-8. **Check extras**: Use checklists for type-specific (e.g., motions: manual review).
+6. **Verify docs**: In "Extracted Docs" table (if any), see name/expected hash. Upload file: Click input, select downloaded doc (e.g., PDF from wiki)—app computes SHA-256 locally, compares, shows preview/match (✅/❌). Or fetch URL: If text/JSON, app uses HTTP outcall (billed if not cached), hashes server response. For multiple: Repeat per doc. Why? Verifies docs untampered (e.g., self-declaration PDFs)—mismatch means wrong file/version. Tip: Download manually first ([curl -O url](https://curl.se/)); upload for hash. Preview shows content snippet. Pitfall: Binary docs? App supports but no preview—use manual hash tools (Section 7). Large files? App caps for cycles.
 
-9. **Export report**: Fill overrides/notes. Download JSON/MD/PDF.
+7. **Verify args**: In "Verify Arg Hash," see extracted args (if Candid). Paste into textarea (app auto-detects format: hex/vec/blob/Candid/text). Select mode; click "Verify"—app encodes (Candid to bytes via didc-like), hashes (SHA-256), compares to `arg_hash` (✅/❌). Quick buttons: Auto-encode `(null)`/`()`. Why? Args configure changes—mismatch could alter behavior (e.g., wrong param). Tip: For Candid, use command builder (`didc encode ...`); paste hex output. Hints warn issues (e.g., "Detected hex-of-hex"). Pitfall: Wrong mode? Switch—e.g., Candid needs encoding first. See [GUIDE.md](https://github.com/dickhery/proposal_verifier/blob/main/GUIDE.md#10-candid-arguments--arg_hash--where-to-find-them-and-how-to-verify).
 
-10. **Publish**: Post report on forum.
+8. **Check extras**: See "Type-Specific Checklist" (e.g., for InstallCode: "Fetch Proposal," "Commit Check"). Items auto-update (✅ on success). For extras (e.g., motions: review implications; controllers: query registry), mark manually. Why? Covers non-auto aspects like policy review. Tip: Use "Guidance" details for tips (e.g., "Download PDFs from wiki"). Pitfall: Incomplete? Do manual (Section 7) before marking.
+
+9. **Export report**: In "Export Report," see auto-filled summary (ID/type/hashes/matches). Fill overrides (e.g., proposer); add "Reviewer Notes" (e.g., "No issues; recommend adopt"). Click exports: JSON (raw data), Markdown (forum-ready with code blocks), PDF (styled printable). Why? Creates shareable evidence. Tip: Markdown best for forum—copy/paste. Customize date/verified-by. Pitfall: Missing fields? App autofills from fetch—check accuracy.
+
+10. **Publish**: Export Markdown/PDF, then post on [DFINITY Forum](https://forum.dfinity.org/) (Governance > NNS Discussion; tag topic). Title: "Verification Report #12345: [Title] – [Verified/Mismatch]". Paste report; add intro ("Verified using app—findings below"). Why? Informs voters; sparks discussion. Tip: Attach PDF; tag @dfinity. See Section 12 for template. For self-host: Clone [Repo](https://github.com/dickhery/proposal_verifier), change beneficiary/ID, deploy `dfx deploy --network ic` (dfx.json attached).
 
 Clone: [Repo](https://github.com/dickhery/proposal_verifier). Change beneficiary/canister IDs.
 
@@ -326,9 +384,93 @@ Mismatches: Wrong Candid; missing .did; double-hex (decode first).
 
 ## 11. Manual-heavy proposals (controllers, motions, participants)
 
-* **Controllers**: Query management canister; match payload.
-* **Motions**: Text-only; verify scope.
-* **Participants**: Hash PDFs; match proposal.
+Some proposal types rely heavily on manual inspection rather than automated rebuilding or hashing of binaries. These include proposals that update canister controllers (e.g., changing who controls a canister), motion proposals (non-binding discussions or polls), and participant management proposals (e.g., adding or removing node providers or data centers). These are "manual-heavy" because they often involve reviewing text descriptions, querying on-chain data for consistency, cross-referencing external documents like PDFs, or evaluating subjective elements like scope and intent.
+
+Verification here focuses on ensuring the proposal's claims align with reality—e.g., no unauthorized changes, documents are authentic, and motions don't hide binding effects. While tools like dfx can help query data, much of the work is interpretive: read carefully, compare against expectations, and check for red flags. Always cross-reference with the proposal summary, Dashboard, and forum discussions. If issues arise (e.g., mismatched principals), reject the proposal and report on the [DFINITY Developer Forum](https://forum.dfinity.org/) to alert the community.
+
+Below, we'll break down verification for each subtype with detailed steps, explanations, commands, tools, examples, and troubleshooting tips. Use the setup from Section 5 (e.g., dfx for queries) and refer to Section 4 (Core concepts) for basics like principals and hashes.
+
+### Controllers (e.g., UpdateCanisterSettings Proposals)
+Controller proposals modify who or what can manage a canister (e.g., upgrade code or stop/start it). The "controller" is a principal (a unique ID like "rrkah-fqaaa-aaaaa-aaaaq-cai") with admin rights. Verification ensures the proposed controllers match the intent—no unauthorized additions/removals that could lead to control loss or attacks.
+
+**Why Verify Controllers?** Wrong controllers could allow malicious upgrades or lock out legitimate owners. In NNS, this affects critical canisters, so mismatches risk network stability.
+
+**Step-by-Step Verification:**
+1. **Identify the Proposal Type and Payload:** Confirm it's a controller-related action (e.g., "UpdateCanisterSettings" in summary or payload). From Dashboard or dfx query (see Section 7, Step 1), extract the target canister ID (principal) and proposed controllers (list of principals).
+   - Example: Summary says "Update controllers for canister ryjl3-tyaaa-aaaaa-aaaba-cai to [principal1, principal2]".
+
+2. **Query Current Controllers:** Use dfx to check the canister's existing settings via the management canister (aaaaa-aa).
+   - Command: `dfx canister call aaaaa-aa canister_status '(record { canister_id = principal "<target-id>" })' --network ic`.
+   - Output: Look for "controllers" field (list of principals). Example: `controllers = vec { principal "rrkah-fqaaa-aaaaa-aaaaq-cai"; principal "another-id" }`.
+   - Why? Compare current vs. proposed to spot unexpected changes (e.g., removal of a trusted principal).
+
+3. **Match Against Payload:** Compare proposed controllers (from proposal) to queried current ones and summary claims.
+   - Proposed often in Candid like `record { controllers = opt vec { principal "id1"; principal "id2" } }`.
+   - Verify: Are additions/removals justified (e.g., forum discussion)? No duplicates/unknown IDs?
+   - Tool: dfx for queries; text editor for comparison.
+
+4. **Check Principals' Validity:** Ensure principals are real (not random strings). Query if they control other canisters or match known entities (e.g., DFINITY principals).
+   - Command (for known): Use ICP Dashboard search or dfx to inspect.
+   - Why? Fake principals could be typos or attacks.
+
+5. **Review Context:** Check forum/wiki for rationale (e.g., "Adding new controller for upgrade"). Verify no hidden effects (e.g., removing all controllers locks the canister).
+
+6. **Report Issues:** If mismatch (e.g., extra controller), note in report: "Proposed adds unknown principal—potential risk."
+
+**Tools:** dfx ([Install](https://internetcomputer.org/docs/current/developer-docs/setup/install/)), text editor. Pitfall: Network errors? Use `--network ic`. Example: For proposal updating ledger controllers, query confirms only authorized IDs added.
+
+### Motions (e.g., Non-Binding Polls or Discussions)
+Motion proposals are text-only and don't execute code—they're for gauging community sentiment, like polls on future directions. No binaries/args, so verification is qualitative: ensure the motion is clear, within scope, and not misleading.
+
+**Why Verify Motions?** Though non-binding, they influence future proposals. Hidden agendas or off-scope could mislead voters, eroding trust. High reward weight (20) means they're important.
+
+**Step-by-Step Verification:**
+1. **Read the Full Text:** From summary/Dashboard, copy title/summary. Understand intent (e.g., "Poll: Should we increase rewards?").
+   - Why? Ensure no embedded code or tricks—motions should be pure text.
+
+2. **Verify Scope:** Check if it aligns with Governance topic (e.g., no binding actions disguised as motion). Refer to Section 3—motions are for discussions, not changes.
+   - Example: If summary says "Motion to upgrade X" but payload is text-only, ok; if implies execution, flag.
+
+3. **Cross-Reference Links/Forum:** Follow URLs (e.g., forum thread). Read discussions—does motion reflect consensus? Check for amendments.
+   - Tool: Browser; search forum for ID.
+
+4. **Check Proposer/History:** Query proposer principal (from fetch). Is it trusted (e.g., DFINITY)? Use Dashboard for past proposals.
+   - Command: From Step 1 query, note "proposer".
+
+5. **Evaluate Implications:** Ask: Is it neutral? Benefits community? No biases? For polls, verify questions fair.
+   - Why? Motions shape strategy—misleading ones could sway votes wrongly.
+
+6. **Report Findings:** If scope ok, "Motion clear and on-topic." If not, "Out of scope—recommend reject."
+
+**Tools:** Browser, text editor. Pitfall: Subjective—base on facts. Example: Motion on "Economics adjustment"—verify no hidden params; check forum for debates.
+
+### Participants (e.g., Add/Remove Node Providers or Data Centers)
+Participant proposals manage network operators/providers, often including self-declarations or identity docs (PDFs). Verify docs authentic (hashes match) and details correct (e.g., no duplicate providers).
+
+**Why Verify Participants?** Wrong providers could compromise decentralization (e.g., concentrated in one region). Hashes ensure docs untampered; checks prevent fraud.
+
+**Step-by-Step Verification:**
+1. **Extract Details:** From summary: Provider ID (principal), data center ID, docs (URLs/hashes), declarations (e.g., "* Identity: hash").
+   - Example: "Add provider with ID abcde-fghij... and declaration PDF hash 1234...abcd".
+
+2. **Check Forum/Wiki Intro:** Search [Forum](https://forum.dfinity.org/) for provider's self-introduction (required for additions). Verify matches proposal (e.g., same ID).
+   - Why? Confirms legitimacy—new providers must post publicly.
+
+3. **Download Docs:** From wiki ([Node Provider Wiki](https://wiki.internetcomputer.org/wiki/Node_Provider_Self-declaration)) or URLs. Save as-is (no edits).
+   - Command: `curl -O <url>`.
+
+4. **Compute Hashes:** `sha256sum file.pdf` (Linux/Mac: `shasum -a 256`). Output: hash + filename.
+   - Compare: To proposal hashes (case-insensitive). Match? Authentic.
+   - Why? Detects tampering—if changed post-submission, hash differs.
+
+5. **Verify Extras:** For additions: Check Chamber of Commerce (if provided) via search. For removals: Confirm provider inactive (query registry: `dfx canister call rno2w-sqaaa-aaaaa-aaacq-cai list_node_providers '()' --network ic`).
+   - Data centers: Verify location/operator independence.
+
+6. **Report Issues:** If hash mismatch: "Doc altered—reject." If no intro: "Missing forum post."
+
+**Tools:** curl, sha256sum ([Expanded in Section 5](#5-setup--dependencies-windowsmacoslinux)). Pitfall: Wrong file version? Download exact link. Example: For add provider, hash PDF matches; check wiki entry valid.
+
+For all: If automated help needed, use app (Section 8). Publish reports (Section 12) to share—your input strengthens ICP!
 
 ---
 
