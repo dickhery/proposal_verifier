@@ -730,6 +730,16 @@ function extractCandidSnippetFromText(text) {
   return null;
 }
 
+function isLikelyCommitMessage(text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return true;
+  if (trimmed.length < 30) return true;
+  if (/^[0-9a-f]{7,40}\s+/i.test(trimmed)) return true;
+  if (/#\d{4,}/.test(trimmed)) return true;
+  if (/^[0-9a-f]{7,40}\s.*\(#\d+\)$/i.test(trimmed)) return true;
+  return false;
+}
+
 // Simple Candid encoders for common cases
 function encodeNullHex() {
   const bytes = IDL.encode([IDL.Null], [null]);
@@ -1602,6 +1612,20 @@ class App {
 
       await this.#detectArgAndDidHints({ allowInputOverride: true, fetchDid: true });
 
+      const browserRepoSlug = this.#normalizeRepoSlug(this.proposalData?.extractedRepo || '');
+      if (
+        this.detectedDidPath &&
+        browserRepoSlug &&
+        this.proposalData?.extractedCommit &&
+        !this.fetchedDidFile?.content
+      ) {
+        await this.#fetchDidFileInBrowser(
+          browserRepoSlug,
+          this.proposalData.extractedCommit,
+          this.detectedDidPath,
+        );
+      }
+
       // Commit check: prefer browser request to avoid burning canister cycles
       this.commitStatus = '';
       const repo = this.proposalData.extractedRepo || 'dfinity/ic';
@@ -2280,11 +2304,11 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
   }
 
   #getCandidArgForCommands() {
-    if (this.autoDetectedArg?.text) {
-      return this.autoDetectedArg.text.trim();
-    }
     if (this.argInputType === 'candid' && this.argInputCurrent) {
       return this.argInputCurrent.trim();
+    }
+    if (this.autoDetectedArg?.text && (!this.argInputTouched || !this.argInputCurrent)) {
+      return this.autoDetectedArg.text.trim();
     }
     const fromCommand = extractDidcArgFromCommand(this.recommendedArgCmd);
     if (fromCommand) return fromCommand.trim();
@@ -2409,6 +2433,12 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
           commit: commitHash,
         };
         this.didFetchError = '';
+        if (!this.argInputTouched) {
+          this.argInputCurrent = result.ok.trim();
+          this.argInputType = 'candid';
+          this.argInputHint = 'Fetched .did file via canister – this is the exact argument text.';
+          this.argInputTouched = false;
+        }
       } else {
         this.fetchedDidFile = null;
         this.didFetchError = result?.err || `Unable to fetch ${this.detectedDidPath}`;
@@ -2417,6 +2447,25 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
       this.fetchedDidFile = null;
       this.didFetchError = err?.message || 'Failed to fetch did file';
     }
+    this.#render();
+  }
+
+  async #fetchDidFileInBrowser(repo, commit, path) {
+    const url = `https://raw.githubusercontent.com/${repo}/${commit}/${path}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      this.fetchedDidFile = { path, content: text, repo, commit };
+      this.argInputCurrent = text.trim();
+      this.argInputType = 'candid';
+      this.argInputHint = `Fetched ${path} in browser – this is the exact argument text for didc encode.`;
+      this.argInputTouched = false;
+      this.didFetchError = '';
+    } catch (e) {
+      this.didFetchError = `Browser fetch of ${path} failed: ${e?.message || e}`;
+    }
+    this.#render();
   }
 
   #describeSource(source) {
@@ -2450,7 +2499,7 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
       candidates.push({ text: payloadCandidate.trim(), source: 'dashboard:payload' });
     }
     const summaryCandidate = extractCandidSnippetFromText(this.proposalData?.summary || '');
-    if (summaryCandidate) {
+    if (summaryCandidate && !isLikelyCommitMessage(summaryCandidate)) {
       candidates.push({ text: summaryCandidate.trim(), source: 'summary:text' });
     }
 
