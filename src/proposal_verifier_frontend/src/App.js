@@ -77,7 +77,14 @@ const CANDID_PATTERN =
   /(^|\W)(record\s*\{|variant\s*\{|opt\s|vec\s|principal\s|service\s|func\s|blob\s|text\s|nat(8|16|32|64)?\b|int(8|16|32|64)?\b|\(\s*\))/i;
 
 const KNOWN_REPO_DID_PATHS = new Map([
-  ['dfinity/nns-dapp', ['nns-dapp-arg-mainnet.did', 'src/declarations/nns_dapp.did']],
+  [
+    'dfinity/nns-dapp',
+    [
+      'nns-dapp-arg-mainnet.did',
+      'scripts/nns-dapp/test-config-assets/mainnet/arg.did',
+      'src/declarations/nns_dapp.did',
+    ],
+  ],
 ]);
 
 const MAX_AUTO_ARG_PREVIEW = 2000;
@@ -730,6 +737,16 @@ function extractCandidSnippetFromText(text) {
   return null;
 }
 
+function isLikelyCommitMessage(text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return true;
+  if (trimmed.length < 30) return true;
+  if (/^[0-9a-f]{7,40}\s+/i.test(trimmed)) return true;
+  if (/#\d{4,}/.test(trimmed)) return true;
+  if (/^[0-9a-f]{7,40}\s.*\(#\d+\)$/i.test(trimmed)) return true;
+  return false;
+}
+
 // Simple Candid encoders for common cases
 function encodeNullHex() {
   const bytes = IDL.encode([IDL.Null], [null]);
@@ -829,6 +846,8 @@ class App {
   autoDetectedArgHint = '';
   detectedDidPath = null;
   detectedDidSource = null;
+  didPathCandidates = [];
+  didPathSourceMap = new Map();
   detectedCandidType = null;
   detectedCandidTypeSource = null;
   fetchedDidFile = null; // { path, content, repo, commit }
@@ -850,6 +869,7 @@ class App {
   argInputType = 'text'; // 'text' | 'hex' | 'candid' | 'vec' | 'blob'
   argInputCurrent = '';
   argInputHint = '';
+  manualCandidOverride = '';
   extractedArgText = null;
   recommendedArgCmd = null; // from summary
 
@@ -1585,10 +1605,13 @@ class App {
       this.argInputType = 'text';
       this.argInputCurrent = '';
       this.argInputTouched = false;
+      this.manualCandidOverride = '';
       this.autoDetectedArg = null;
       this.autoDetectedArgHint = '';
       this.detectedDidPath = null;
       this.detectedDidSource = null;
+      this.didPathCandidates = [];
+      this.didPathSourceMap = new Map();
       this.detectedCandidType = null;
       this.detectedCandidTypeSource = null;
       this.fetchedDidFile = null;
@@ -1601,6 +1624,25 @@ class App {
       this.#resolveHashesFromSources();
 
       await this.#detectArgAndDidHints({ allowInputOverride: true, fetchDid: true });
+
+      const browserRepoSlug = this.#normalizeRepoSlug(this.proposalData?.extractedRepo || '');
+      const browserDidCandidates = this.didPathCandidates && this.didPathCandidates.length
+        ? [...this.didPathCandidates]
+        : this.detectedDidPath
+        ? [this.detectedDidPath]
+        : [];
+      if (
+        browserDidCandidates.length &&
+        browserRepoSlug &&
+        this.proposalData?.extractedCommit &&
+        !this.fetchedDidFile?.content
+      ) {
+        await this.#fetchDidFileInBrowser(
+          browserRepoSlug,
+          this.proposalData.extractedCommit,
+          browserDidCandidates,
+        );
+      }
 
       // Commit check: prefer browser request to avoid burning canister cycles
       this.commitStatus = '';
@@ -2165,6 +2207,9 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     if (val === 'candid') {
       this.hashError =
         'Candid text must be encoded to bytes (e.g., with `didc encode`) before hashing. Use the quick buttons below or the command builder.';
+      if (this.argInputCurrent) {
+        this.manualCandidOverride = this.argInputCurrent.trim();
+      }
     } else {
       this.hashError = '';
     }
@@ -2175,6 +2220,13 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     const v = (e?.target?.value ?? '').trim();
     this.argInputCurrent = v;
     this.argInputTouched = true;
+    if (this.argInputType === 'candid') {
+      this.manualCandidOverride = v;
+    } else if (this.argInputType === 'text' && CANDID_PATTERN.test(v)) {
+      this.manualCandidOverride = v;
+    } else if (!v) {
+      this.manualCandidOverride = '';
+    }
 
     // Helpful hints and mistake detection
     if (/^blob\s*"/i.test(v)) {
@@ -2280,11 +2332,15 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
   }
 
   #getCandidArgForCommands() {
-    if (this.autoDetectedArg?.text) {
-      return this.autoDetectedArg.text.trim();
+    const manualOverride = (this.manualCandidOverride || '').trim();
+    if (manualOverride) {
+      return manualOverride;
     }
     if (this.argInputType === 'candid' && this.argInputCurrent) {
       return this.argInputCurrent.trim();
+    }
+    if (this.autoDetectedArg?.text && (!this.argInputTouched || !this.argInputCurrent)) {
+      return this.autoDetectedArg.text.trim();
     }
     const fromCommand = extractDidcArgFromCommand(this.recommendedArgCmd);
     if (fromCommand) return fromCommand.trim();
@@ -2367,56 +2423,134 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
     this.argInputCurrent = this.autoDetectedArg.text.trim();
     this.argInputType = 'candid';
     this.argInputHint = this.autoDetectedArgHint || 'Auto-filled from proposal context. Encode with didc before hashing.';
+    this.manualCandidOverride = this.argInputCurrent;
     this.argInputTouched = false;
     this.#render();
   }
 
   async #maybeFetchDidFile() {
-    if (!this.detectedDidPath) {
-      this.fetchedDidFile = null;
-      this.didFetchError = '';
-      return;
-    }
     const repoRaw = (this.proposalData?.extractedRepo || '').trim();
     const commitHash = (this.proposalData?.extractedCommit || '').trim();
     const repoSlug = this.#normalizeRepoSlug(repoRaw);
+    const candidates = Array.isArray(this.didPathCandidates) && this.didPathCandidates.length
+      ? [...this.didPathCandidates]
+      : this.detectedDidPath
+      ? [this.detectedDidPath]
+      : [];
+
     if (!repoSlug || !commitHash) {
       this.fetchedDidFile = null;
       this.didFetchError = repoSlug ? '' : 'Repository missing for didc -d path.';
-      return;
+      return false;
     }
+    if (!candidates.length) {
+      this.fetchedDidFile = null;
+      this.didFetchError = '';
+      this.detectedDidPath = null;
+      return false;
+    }
+
     const existing = this.fetchedDidFile;
     if (
       existing &&
       existing.repo === repoSlug &&
       existing.commit === commitHash &&
-      existing.path === this.detectedDidPath
+      existing.content &&
+      candidates.includes(existing.path)
     ) {
-      return;
+      this.detectedDidPath = existing.path;
+      this.detectedDidSource = this.didPathSourceMap.get(existing.path) || this.detectedDidSource;
+      return true;
     }
+
     if (typeof this.backend.fetchDidFile !== 'function') {
       this.didFetchError = '';
       console.warn('fetchDidFile not available on backend actor; regenerate declarations after backend update.');
-      return;
+      return false;
     }
-    try {
-      const result = await this.backend.fetchDidFile(repoSlug, commitHash, this.detectedDidPath);
-      if (result?.ok) {
-        this.fetchedDidFile = {
-          path: this.detectedDidPath,
-          content: result.ok,
-          repo: repoSlug,
-          commit: commitHash,
-        };
-        this.didFetchError = '';
-      } else {
-        this.fetchedDidFile = null;
-        this.didFetchError = result?.err || `Unable to fetch ${this.detectedDidPath}`;
+
+    const errors = [];
+    for (const pathCandidate of candidates) {
+      try {
+        const result = await this.backend.fetchDidFile(repoSlug, commitHash, pathCandidate);
+        if (result?.ok) {
+          const trimmed = result.ok.trim();
+          this.fetchedDidFile = {
+            path: pathCandidate,
+            content: result.ok,
+            repo: repoSlug,
+            commit: commitHash,
+          };
+          this.didFetchError = '';
+          this.detectedDidPath = pathCandidate;
+          this.detectedDidSource = this.didPathSourceMap.get(pathCandidate) || this.detectedDidSource;
+          this.didPathCandidates = [pathCandidate, ...candidates.filter((p) => p !== pathCandidate)];
+          if (!this.argInputTouched) {
+            this.argInputCurrent = trimmed;
+            this.argInputType = 'candid';
+            this.argInputHint = 'Fetched .did file via canister – this is the exact argument text.';
+            this.manualCandidOverride = trimmed;
+            this.argInputTouched = false;
+          }
+          this.#render();
+          return true;
+        }
+        errors.push(`${pathCandidate}: ${result?.err || 'Unknown error'}`);
+      } catch (err) {
+        errors.push(`${pathCandidate}: ${err?.message || err}`);
       }
-    } catch (err) {
-      this.fetchedDidFile = null;
-      this.didFetchError = err?.message || 'Failed to fetch did file';
     }
+
+    this.fetchedDidFile = null;
+    if (errors.length) {
+      const label = candidates.length > 1 ? 'any .did candidates' : candidates[0];
+      this.didFetchError = `Unable to fetch ${label} via canister: ${errors.join('; ')}`;
+    } else {
+      this.didFetchError = 'Failed to fetch did file';
+    }
+    this.#render();
+    return false;
+  }
+
+  async #fetchDidFileInBrowser(repo, commit, paths) {
+    const pathList = Array.isArray(paths) ? paths.filter(Boolean) : [paths].filter(Boolean);
+    if (!pathList.length) {
+      return false;
+    }
+
+    const errors = [];
+    for (const path of pathList) {
+      const url = `https://raw.githubusercontent.com/${repo}/${commit}/${path}`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        const trimmed = text.trim();
+        this.fetchedDidFile = { path, content: text, repo, commit };
+        this.didFetchError = '';
+        this.detectedDidPath = path;
+        this.detectedDidSource = this.didPathSourceMap.get(path) || this.detectedDidSource;
+        this.didPathCandidates = [path, ...pathList.filter((p) => p !== path)];
+        this.argInputCurrent = trimmed;
+        this.argInputType = 'candid';
+        this.argInputHint = `Fetched ${path} in browser – this is the exact argument text for didc encode.`;
+        this.manualCandidOverride = trimmed;
+        this.argInputTouched = false;
+        this.#render();
+        return true;
+      } catch (e) {
+        errors.push(`${path}: ${e?.message || e}`);
+      }
+    }
+
+    if (errors.length) {
+      const label = pathList.length > 1 ? '.did paths' : pathList[0];
+      this.didFetchError = `Browser fetch of ${label} failed: ${errors.join('; ')}`;
+    } else {
+      this.didFetchError = 'Browser fetch of did file failed.';
+    }
+    this.#render();
+    return false;
   }
 
   #describeSource(source) {
@@ -2450,7 +2584,7 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
       candidates.push({ text: payloadCandidate.trim(), source: 'dashboard:payload' });
     }
     const summaryCandidate = extractCandidSnippetFromText(this.proposalData?.summary || '');
-    if (summaryCandidate) {
+    if (summaryCandidate && !isLikelyCommitMessage(summaryCandidate)) {
       candidates.push({ text: summaryCandidate.trim(), source: 'summary:text' });
     }
 
@@ -2467,11 +2601,14 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
         this.argInputCurrent = firstText;
         this.argInputType = 'candid';
         this.argInputHint = this.autoDetectedArgHint;
+        this.manualCandidOverride = firstText;
+        this.argInputTouched = false;
       }
     } else if (!this.argInputTouched && allowInputOverride) {
       this.argInputCurrent = '';
       this.argInputType = 'text';
       this.argInputHint = '';
+      this.manualCandidOverride = '';
       this.autoDetectedArg = null;
       this.autoDetectedArgHint = '';
     } else {
@@ -2501,10 +2638,12 @@ shasum -a 256 ${fname}  # macOS (expect ${expected})`,
       if (!item.path) continue;
       if (!uniqueDid.has(item.path)) uniqueDid.set(item.path, item.source);
     }
-    if (uniqueDid.size) {
-      const [path, source] = uniqueDid.entries().next().value;
-      this.detectedDidPath = path;
-      this.detectedDidSource = source;
+    this.didPathSourceMap = new Map(uniqueDid);
+    this.didPathCandidates = Array.from(uniqueDid.keys());
+    if (this.didPathCandidates.length) {
+      const firstPath = this.didPathCandidates[0];
+      this.detectedDidPath = firstPath;
+      this.detectedDidSource = uniqueDid.get(firstPath) || null;
     } else {
       this.detectedDidPath = null;
       this.detectedDidSource = null;
