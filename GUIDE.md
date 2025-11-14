@@ -343,42 +343,180 @@ Clone: [Repo](https://github.com/dickhery/proposal_verifier). Change beneficiary
 
 ---
 
-## 9. Rebuilding & hashing binaries (IC canisters & IC-OS)
+## 9. Rebuilding & Hashing Binaries (IC Canisters & IC-OS)
 
-Rebuilding confirms code matches proposal—prevents backdoors.
+Rebuilding binaries from source code and hashing them is a critical step in proposal verification. It confirms that the proposed code (e.g., Wasm modules or OS images) exactly matches the source at the specified commit, preventing backdoors, tampering, or errors. By rebuilding independently, you ensure the binary in the proposal hasn't been altered post-build. Hashing computes a unique "fingerprint" (e.g., SHA-256 digest) of the file—if even one bit changes, the hash differs, alerting you to mismatches.
 
-* **IC Canisters**: E.g., governance.
-  - Clone: `git clone https://github.com/dfinity/ic`.
-  - Checkout: `git checkout <commit>`.
-  - Build: `./ci/container/build-ic.sh -c` (Docker required).
-  - Locate: `artifacts/canisters/*.wasm.gz`.
-  - Hash: `sha256sum file.wasm.gz`.
-  - Compare: To proposal "wasm_module_hash".
+Hashing is a one-way cryptographic function: it turns any file into a fixed-length string (64 hex characters for SHA-256), but you can't reverse it to get the original file. It's deterministic (same input = same output) and collision-resistant (hard to find two files with the same hash). In verification:
+- Download or build the file locally.
+- Compute its hash.
+- Compare to the proposal's expected hash (e.g., "wasm_module_hash" for canisters or image hashes for IC-OS).
+A match means the file is authentic; a mismatch could indicate a wrong commit, corruption, or foul play.
 
-* **IC-OS**: GuestOS/HostOS.
-  - Script: `curl https://raw.githubusercontent.com/dfinity/ic/<commit>/gitlab-ci/tools/repro-check.sh | bash -s -- -c <commit>`.
-  - Hashes: In output; compare to proposal.
+Here's how to compute hashes on different platforms, with examples. These tools are efficient for any file size, reading in chunks to avoid memory issues. Focus on Linux and macOS as primary platforms, but include Windows notes for completeness. Always hash locally—avoid online tools for security.
 
-Details: [ICP GitHub verifying releases](https://github.com/dfinity/ic?tab=readme-ov-file#verifying-releases).
+- **Linux (sha256sum, built-in on most distributions like Ubuntu):**  
+  Command: `sha256sum <file>`  
+  Example: After building a canister Wasm (e.g., `governance.wasm.gz` in `artifacts/canisters/`):  
+  ```bash  
+  sha256sum artifacts/canisters/governance.wasm.gz  
+  ```  
+  Output: e.g., `a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890  governance.wasm.gz`. Extract the hash (first part) and compare to the proposal. For raw (unzipped) files: `gunzip governance.wasm.gz` then `sha256sum governance.wasm`. Use with pipes for hex inputs: `echo -n "hex_string" | xxd -r -p | sha256sum`.
+
+- **macOS (shasum, built-in):**  
+  Command: `shasum -a 256 <file>`  
+  Example: For the same `governance.wasm.gz`:  
+  ```bash  
+  shasum -a 256 artifacts/canisters/governance.wasm.gz  
+  ```  
+  Output: Similar, e.g., `a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890  governance.wasm.gz`. Compare the hash. For large archives like IC-OS images (e.g., `disk-img.tar.zst`): `shasum -a 256 disk-img.tar.zst`. Hashes are case-insensitive (usually lowercase in proposals).
+
+- **Windows (via PowerShell or WSL – Use WSL for Linux-like experience):**  
+  - **PowerShell (built-in on Windows 10+):** Command: `Get-FileHash <file> -Algorithm SHA256`  
+    Example: In PowerShell, navigate (e.g., `cd Path\To\Artifacts`), then:  
+    ```powershell  
+    Get-FileHash artifacts\canisters\governance.wasm.gz -Algorithm SHA256  
+    ```  
+    Output: Includes `Hash: A1B2C3D4E5F67890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890` (uppercase—convert to lowercase if needed for comparison).  
+  - **WSL (Recommended):** Install WSL (see Section 2 for setup), then use Linux commands like `sha256sum`. Ideal for consistency with ICP tools.
+
+**Tips for Hashing:** 
+- Install prerequisites: Linux/macOS often have these built-in; for xxd (hex conversion), install via `apt install vim-common` (Linux) or it's built-in on macOS.
+- Common Pitfalls: Hash gzipped vs. raw files as specified (proposals often use gzipped for canisters). Wrong commit? Recheck `git rev-parse HEAD`. Large files? Tools handle them fine. Case sensitivity: Hashes are hex, case-insensitive.
+- Security: Download files/scripts from trusted sources (e.g., official GitHub). Verify script hashes if provided.
+
+### IC Canisters (e.g., Governance, Ledger)
+For canister upgrades (e.g., ProtocolCanisterManagement topic), rebuild Wasm modules from the IC repo.
+
+**Prerequisites:** Git (for cloning), Docker (for builds—install via official guides in Section 2). ~100GB free space. Ubuntu 22.04+ recommended; macOS/Windows via Docker/WSL.
+
+1. **Clone Repo:** `git clone https://github.com/dfinity/ic`. (Clones the full source.)
+2. **Checkout Commit:** `git checkout <commit>` (Replace `<commit>` with proposal's git hash, e.g., `abc1234`. Verify: `git rev-parse HEAD` should match.)
+3. **Build:** Navigate to repo root: `cd ic`. Run `./ci/container/build-ic.sh -c` (Builds canisters; requires Docker. Takes time—use `-j` for parallel if multi-core.)
+4. **Locate Artifacts:** Built Wasms in `artifacts/canisters/*.wasm.gz` (e.g., `governance.wasm.gz`).
+5. **Hash & Compare:** Use platform-specific commands above. Compare to proposal's "wasm_module_hash". Mismatch? Check build logs for errors or wrong commit.
+
+Details: See [ICP GitHub](https://github.com/dfinity/ic) for advanced builds. If proposal specifies args (e.g., for init/upgrade), encode with didc (Section 2) and hash separately.
+
+### IC-OS (GuestOS/HostOS/SetupOS)
+For OS version elections (IcOsVersionElection topic), verify images match proposal hashes.
+
+**Prerequisites:** Python 3+, curl, ~100GB space. Ubuntu 22.04+.
+
+1. **Run Verification Script:** Use versioned URL (replace `{COMMIT_ID}` with proposal's commit):  
+   ```bash  
+   curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | python3 - -c {COMMIT_ID}  
+   ```  
+   (Verifies all components. For specific: Add `--guestos`, `--hostos`, or `--setupos`.)
+2. **Output & Hashes:** Script builds images, outputs hashes (e.g., for GuestOS disk-img). Compare to proposal's hashes.
+3. **Compare:** Match? Proposal is valid. Mismatch? Report on forum.
+
+Details: [ICP GitHub Verifying Releases](https://github.com/dfinity/ic?tab=readme-ov-file#verifying-releases). Script ensures reproducibility—run on clean machine for best results.
+
+**Common Pitfalls Across Both:** Docker issues? Check permissions (`sudo usermod -aG docker $USER`). Build fails? Missing deps—install build-essential/libssl-dev. Timeouts? Increase resources. Always use exact commit—proposals are immutable post-submission. If stuck, forum-search errors.
 
 ---
 
 ## 10. Candid arguments & `arg_hash` — where to find them and how to verify
 
+Candid arguments (often abbreviated as "args") are the input parameters or configuration data passed to a canister during actions like installations or upgrades in NNS proposals. They are typically written in Candid, ICP's interface description language, which defines how data is structured and serialized (converted to bytes) for on-chain execution. The `arg_hash` is the SHA-256 hash (a 64-character hexadecimal digest) of these serialized argument bytes. Verifying the `arg_hash` ensures the arguments haven't been tampered with and match exactly what the proposal claims—preventing subtle changes that could alter behavior, like wrong configurations or malicious data.
+
+Why verify args? In proposals like InstallCode or UpdateCanisterSettings, args might include settings (e.g., controllers) or data (e.g., initial balances). A mismatch could lead to security risks, such as unauthorized access. The process involves: finding the args (usually Candid text), encoding them to bytes (serialization), hashing the bytes, and comparing to the proposal's `arg_hash`.
+
+You'll need `didc` installed (see Section 5 for setup) for encoding/decoding, and hashing tools like `sha256sum` (Linux), `shasum` (macOS), or `Get-FileHash` (Windows PowerShell). We'll provide commands for Linux, macOS, and Windows (via WSL or PowerShell) with examples. Always work in a terminal for precision—copy commands exactly, replacing placeholders like `<args>`.
+
 ### 10.1 Where do I find the arguments?
-- Summary/payload: Often `(record { ... })`.
-- Dashboard: "Payload" section.
-- API: JSON `arg` field.
+Arguments are often provided in the proposal's summary or payload, but locating them requires checking multiple sources for completeness and cross-verification. This step is crucial because args might be truncated in summaries or require context from linked documents.
+
+- **From the Proposal Summary:** The summary (text description) often includes Candid args directly, especially for simple proposals. Look for patterns like `(record { ... })` or `(variant { ... })`. Example: In a proposal summary, you might see "Arguments: (record { max_age = 100 : nat64 })".
+  - How: Copy the full summary from the NNS dapp or Dashboard. Use a text editor to search for "(" or "record".
+  - Tip: If the summary says "Arguments: (null)" or "empty," note it—special handling in 10.4.
+
+- **From the Payload (Detailed View):** The payload is the structured data (often JSON-like in Dashboard). It may show args as Candid text or hex bytes.
+  - How: On [ICP Dashboard](https://dashboard.internetcomputer.org/governance), search the ID and expand "Payload." Look for "arg" or "arguments" fields.
+  - Via Command Line: Use dfx: `dfx canister call rrkah-fqaaa-aaaaa-aaaaq-cai get_proposal_info '(12345)' --network ic`. Parse the output for "arg" (use tools like grep: `| grep -A 5 arg`).
+  - Tip: If hex bytes, decode first (see 10.2 for decoding).
+
+- **From the ICP API:** For programmatic access, query the API endpoint.
+  - How: `curl https://ic-api.internetcomputer.org/api/v3/proposals/12345` (replace ID). Parse JSON for "payload" or "arg" (use jq: `| jq '.proposal.payload'`).
+  - Why: API provides raw data—less prone to UI truncation.
+
+- **From Forum/Linked Docs:** If not in summary, check the proposal's URL (often a forum post) or attached PDFs/wiki.
+  - How: Open the link; search for "arguments" or Candid snippets.
+  - Tip: Use browser search (Ctrl+F) or text tools (e.g., `grep '(record' file.txt`).
+
+- **Common Pitfalls & Tips:** Args might be omitted if null/empty—assume `(null)` or `()` (test both, see 10.4). If complex, note the .did file (interface) for encoding (fetch from repo). Why multiple sources? Cross-check prevents tampering—e.g., summary might differ from payload. Save to a file (e.g., `args.txt`) for encoding.
+
+Example: For Proposal #12345, summary says "Args: (record { setting = true })". Copy: `(record { setting = true })`.
 
 ### 10.2 How to encode arguments (with `didc`)
-`didc encode '(args)' > hex.txt`. With `.did`: `didc encode -d file.did '(args)'`.
+Encoding converts Candid text (human-readable) to bytes (binary) for hashing—matching how ICP serializes args on-chain. `didc` is the tool: it takes Candid text and outputs hex bytes (string of 0-9a-f). Decoding reverses this (hex to text) for inspection. Always encode before hashing—hashing text directly won't match `arg_hash`.
+
+**Why Encode?** ICP hashes serialized bytes, not text. Encoding ensures exact byte-for-byte match. Skip for raw hex args.
+
+**Step-by-Step Encoding (All Platforms):**
+1. **Prepare Args Text:** From 10.1, save to `args.txt` (e.g., `(record { max_age = 100 : nat64 })`). Ensure exact—no extra spaces/quotes unless part of syntax.
+2. **Optional: Get .did File:** If proposal references (e.g., "use governance.did"), fetch: `curl https://raw.githubusercontent.com/<repo>/<commit>/rs/src/governance.did -o governance.did`. Why? Defines types for accurate encoding.
+3. **Encode to Hex:**
+   - Command (All): `didc encode '(args-text)'` (replace with your args).
+   - With .did: `didc encode -d file.did '(args-text)'`.
+   - Output: Hex string (e.g., "4449444c0001710a68656c6c6f20776f726c64").
+   - Save: `didc encode ... > hex.txt`.
+4. **Platform-Specific Notes:**
+   - **Linux/macOS:** Above works directly. Pipe for no newline: `didc encode ... | tr -d '\n' > hex.txt`.
+   - **Windows (WSL/PowerShell):** Use WSL for Linux commands. PowerShell: Install didc via Rust, run as above.
+5. **Verify Encoding:** Decode back: `didc decode <hex>`. Should match original text.
+6. **Examples:**
+   - Simple: `didc encode '("hello")'` → "4449444c0001710a68656c6c6f20776f726c64".
+   - Record: `didc encode '(record { age = 42 : nat })'` (outputs hex).
+   - With .did: If did defines "type Person = record { age : nat };", then `didc encode -d person.did '(record { age = 42 : nat })'`.
+7. **Troubleshooting:** Error "type mismatch"? Wrong Candid—check syntax ([Motoko Grammar attached](motoko-grammar.txt)). No output? Empty args (see 10.4). Install issues? Reinstall Rust/didc ([Guide](https://github.com/dfinity/candid/releases)). Pitfall: Encode text only—don't hash it directly.
+
+**Decoding (For Inspection):** If args are hex in proposal (rare), decode to text for readability.
+- Command: `didc decode <hex> -d file.did` (outputs Candid text).
+- Example: `didc decode 4449444c0001710a68656c6c6f20776f726c64` → '("hello")'.
+- Why? Helps understand args before re-encoding/hashing.
+
+Tip: For complex args, break down in editor—ensure types match .did ([Candid Releases](https://github.com/dfinity/candid/releases)).
 
 ### 10.3 Compute the `arg_hash` and compare
-`xxd -r -p hex.txt | sha256sum`. Match "arg_hash".
+With encoded hex from 10.2, convert to bytes and hash with SHA-256. Compare to proposal's `arg_hash` (from summary/Dashboard/API)—match confirms args integrity.
+
+**Why Hash?** `arg_hash` is SHA-256 of bytes—verifies exact serialization without recomputing on-chain.
+
+**Step-by-Step (All Platforms):**
+1. **Convert Hex to Bytes:** From `hex.txt`, create binary file.
+   - Command: `xxd -r -p hex.txt > args.bin`.
+2. **Compute SHA-256:**
+   - **Linux:** `sha256sum args.bin` (output: "hash  args.bin"—take hash).
+   - **macOS:** `shasum -a 256 args.bin` (similar output).
+   - **Windows (PowerShell):** `Get-FileHash args.bin -Algorithm SHA256 | Select-Object -ExpandProperty Hash` (uppercase hash—lowercase for comparison).
+   - With WSL: As Linux.
+3. **Compare:** Normalize (lowercase, no spaces) and match to `arg_hash`. Use diff: `echo "<computed>" | diff - <(echo "<expected>")`.
+4. **Examples:**
+   - Linux: `xxd -r -p hex.txt > args.bin; sha256sum args.bin` → "efcdab8998badcfe1032547698badcfe10325476efcdab8998badcfe".
+   - macOS: `xxd -r -p hex.txt > args.bin; shasum -a 256 args.bin`.
+   - If match: Verified! Mismatch: Recheck encoding.
+5. **Troubleshooting:** Wrong hash? Double-hex (decode extra: `xxd -r -p hex.txt | xxd -r -p > args.bin`). File empty? Null args (10.4). Tools missing? Install xxd (`apt install vim-common` Linux; built-in macOS). Pitfall: Trailing newline in hex—use `tr -d '\n'` before xxd.
 
 ### 10.4 “Null/empty” arguments and common gotchas
-`(null)` encodes differently from `()`.
-Mismatches: Wrong Candid; missing .did; double-hex (decode first).
+Null or empty args are common (e.g., no config needed) but tricky—different notations encode differently, leading to mismatches.
+
+- **`()` (Unit/Empty Tuple):** Encodes to empty bytes (hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855). Use for "no args."
+  - Encode: `didc encode '()' > hex.txt` (hex empty).
+
+- **`(null)` (Null Value):** Encodes to single byte (hash: 6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d).
+  - Encode: `didc encode '(null)' > hex.txt`.
+
+- **Common Gotchas & Fixes:**
+  - **Mismatch Reasons:** Wrong notation (test both); extra spaces/quotes in Candid (trim); missing .did (types wrong); double-encoding (decode hex first if "hex-of-hex"—check length 64 but content hex-like).
+  - **Step to Fix:** Decode proposal `arg_hash` bytes if hex provided: First get bytes from `arg_hash` (it's hash, not bytes—re-encode your args to match hash).
+  - **Empty vs. Null:** Proposals specify—e.g., "null arguments" = `(null)`. Test: Encode both; hash; compare.
+  - **Other Pitfalls:** Windows line endings (use WSL); large args (didc handles); no .did for custom types (fetch from repo: `curl https://raw.githubusercontent.com/<repo>/<commit>/<path>.did -o file.did`).
+  - **Examples:** For `()`: `didc encode '()' | tr -d '\n' | xxd -r -p | sha256sum`. For null: Replace '()'.
+  - **Tip:** If unsure, decode proposal args (if hex): `echo "<arg_hex>" | xxd -r -p | didc decode -d file.did`. Inspect; re-encode.
+
+Mastering this verifies 80% of proposals—practice on open ones! If stuck, forum or Section 13.
 
 ---
 
